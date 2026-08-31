@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riskagent"
+version = "0.1.0"
+description = "TawasolPay Cyber Risk Assistant"
+requires-python = ">=3.11"
+# Runtime dependencies are added phase-by-phase, each with a one-line justification.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use assert freely and skip some annotation strictness.
+"tests/**" = []
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

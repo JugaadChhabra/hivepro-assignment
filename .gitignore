@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Application cache: kev.json, nist catalog, chroma index (phases 4/7)
+cache/
+
+# Editor settings
+.vscode/
