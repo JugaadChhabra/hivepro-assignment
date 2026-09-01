@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "TawasolPay Cyber Risk Assistant"
 requires-python = ">=3.11"
 # Runtime dependencies are added phase-by-phase, each with a one-line justification.
-dependencies = []
+dependencies = [
+    "pydantic>=2.7",  # typed data contracts — the spine of the pipeline (§2)
+]
 
 [project.optional-dependencies]
 dev = [
@@ -39,6 +41,7 @@ files = ["src", "tests"]
 mypy_path = "src"
 explicit_package_bases = true
 namespace_packages = true
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
