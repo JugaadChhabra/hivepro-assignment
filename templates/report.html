@@ -3,75 +3,363 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TawasolPay Cyber Risk Brief</title>
+  <title>TawasolPay — Top 5 Cyber Risks</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font: 15px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; max-width: 820px;
-           margin: 2rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.5rem; margin-bottom: .25rem; }
-    .risk { border: 1px solid #8884; border-radius: 8px; padding: .75rem 1rem; margin: 1rem 0; }
-    .risk h2 { font-size: 1.1rem; margin: 0 0 .5rem; }
-    .risk p { margin: .3rem 0; }
-    .label { font-weight: 600; }
-    .threat.none { opacity: .7; }
-    .tag { font-size: .75rem; border: 1px solid #c80; color: #c80; border-radius: 4px;
-           padding: 0 .3rem; margin-left: .3rem; }
-    .banner { background: #fdd; color: #900; border: 1px solid #c00; border-radius: 6px;
-              padding: .5rem .75rem; margin: .5rem 0; font-weight: 600; }
-    footer { margin-top: 2rem; font-size: .8rem; opacity: .7; border-top: 1px solid #8884;
-             padding-top: .5rem; }
+    /* ── TawasolPay Risk Console ─────────────────────────────────────────────
+       A committed dark SOC surface: graphite void, panels a few % lighter, one
+       hue for structure and colour reserved for status. Depth = borders + tint,
+       not shadow. Type: system sans to read, ui-monospace for the console voice. */
+    :root {
+      color-scheme: dark;
+      --void:        #0a0b0e;   /* canvas */
+      --panel:       #101216;   /* register + cards */
+      --panel-hi:    #161a20;   /* raised / expanded detail */
+      --panel-hover: #14171d;
+      --line:        rgba(255,255,255,.07);
+      --line-strong: rgba(255,255,255,.12);
+      --focus:       rgba(120,170,255,.55);
+
+      --ink:      #e9edf3;      /* primary */
+      --ink-2:    rgba(233,237,243,.72);
+      --ink-3:    rgba(233,237,243,.50);
+      --ink-4:    rgba(233,237,243,.34);
+
+      --critical: #ff6b6b;      /* CVSS critical / act — scarce */
+      --critical-dim: rgba(255,107,107,.14);
+      --elevated: #f4b544;      /* high / warning / template */
+      --elevated-dim: rgba(244,181,68,.13);
+      --clear:    #57cc8a;      /* grounded / healthy */
+      --clear-dim: rgba(87,204,138,.14);
+
+      --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --r-chip: 5px; --r-card: 10px; --r-panel: 14px;
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0; background: var(--void); color: var(--ink);
+      font: 400 15px/1.55 var(--sans);
+      -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px 72px; }
+    a { color: inherit; }
+    .num { font-variant-numeric: tabular-nums; }
+    .mono { font-family: var(--mono); }
+
+    /* ── top status bar ─────────────────────────────────────────────────── */
+    .statusbar {
+      position: sticky; top: 0; z-index: 5;
+      background: color-mix(in srgb, var(--void) 88%, transparent);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
+      font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em;
+    }
+    .statusbar .inner {
+      max-width: 1080px; margin: 0 auto; padding: 11px 24px;
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 6px 16px; flex-wrap: wrap;
+    }
+    .brand { color: var(--ink-2); text-transform: uppercase; }
+    .brand b { color: var(--ink); font-weight: 600; }
+    .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+           background: var(--clear); margin-right: 7px; vertical-align: middle;
+           box-shadow: 0 0 0 3px var(--clear-dim); }
+    .status-r { color: var(--ink-3); text-transform: uppercase; }
+    .status-r .ok { color: var(--clear); } .status-r .warn { color: var(--elevated); }
+
+    /* ── header ─────────────────────────────────────────────────────────── */
+    header { padding: 56px 0 8px; }
+    .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .16em;
+               text-transform: uppercase; color: var(--ink-3); margin: 0 0 18px; }
+    h1 { margin: 0; font-size: 40px; line-height: 1.05; font-weight: 620;
+         letter-spacing: -.02em; text-wrap: balance; overflow-wrap: anywhere; }
+    h1 .accent { color: var(--critical); }
+    .lede { margin: 16px 0 0; max-width: 60ch; color: var(--ink-2); font-size: 15.5px;
+            text-wrap: pretty; }
+
+    /* ── KPI strip ──────────────────────────────────────────────────────── */
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+            margin: 34px 0 8px; background: var(--line); border: 1px solid var(--line);
+            border-radius: var(--r-card); overflow: hidden; }
+    .kpi { background: var(--panel); padding: 16px 18px; }
+    .kpi .v { font-family: var(--mono); font-size: 28px; font-weight: 600;
+              letter-spacing: -.01em; line-height: 1; }
+    .kpi { min-width: 0; }
+    .kpi .l { font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+              text-transform: uppercase; color: var(--ink-3); margin-top: 9px;
+              overflow-wrap: anywhere; }
+    .kpi .v small { font-size: 15px; color: var(--ink-3); font-weight: 500; }
+
+    /* ── banners ────────────────────────────────────────────────────────── */
+    .banner { display: flex; gap: 10px; align-items: flex-start;
+              background: var(--critical-dim); border: 1px solid rgba(255,107,107,.3);
+              color: #ffc9c9; border-radius: var(--r-card); padding: 12px 15px;
+              margin: 20px 0; font-size: 13.5px; line-height: 1.5; }
+    .banner::before { content: "▲"; color: var(--critical); font-size: 11px; margin-top: 3px; }
+
+    /* ── register ───────────────────────────────────────────────────────── */
+    .register { border: 1px solid var(--line); border-radius: var(--r-panel);
+                overflow: hidden; margin-top: 28px; background: var(--panel); }
+    .risk { border-top: 1px solid var(--line); }
+    .risk:first-child { border-top: 0; }
+
+    details > summary { list-style: none; cursor: pointer; }
+    details > summary::-webkit-details-marker { display: none; }
+
+    .row { display: grid; grid-template-columns: 54px 1fr auto;
+           gap: 20px; align-items: start; padding: 20px 22px 20px 20px;
+           position: relative; transition: background .14s cubic-bezier(.23,1,.32,1); }
+    .row::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+                   width: 3px; background: var(--spine, var(--ink-4)); }
+    summary:hover .row { background: var(--panel-hover); }
+    summary:focus-visible { outline: none; }
+    summary:focus-visible .row { background: var(--panel-hover);
+                                 box-shadow: inset 0 0 0 1.5px var(--focus); }
+
+    .rank { font-family: var(--mono); font-size: 30px; font-weight: 600;
+            color: var(--ink-4); line-height: 1.05; letter-spacing: -.02em; }
+
+    .body { min-width: 0; }
+    .title { margin: 0; font-size: 17px; font-weight: 580; letter-spacing: -.01em;
+             line-height: 1.3; text-wrap: pretty; overflow-wrap: anywhere; }
+    .asset { font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+             margin-top: 6px; overflow-wrap: anywhere; }
+    .asset b { color: var(--ink-2); font-weight: 500; }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 13px; }
+    .chip { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+            text-transform: uppercase; color: var(--ink-3);
+            border: 1px solid var(--line-strong); border-radius: var(--r-chip);
+            padding: 3px 7px; white-space: nowrap; }
+    .chip.cve { color: var(--ink-2); }
+    .chip.risk { color: #ffd7b0; border-color: rgba(244,181,68,.32); }
+    .chip.sev-critical { color: var(--critical); border-color: rgba(255,107,107,.4);
+                         background: var(--critical-dim); }
+    .chip.sev-high { color: var(--elevated); border-color: rgba(244,181,68,.4);
+                     background: var(--elevated-dim); }
+    .chip.sev-medium { color: var(--elevated); }
+    .chip.ransom { color: var(--critical); border-color: rgba(255,107,107,.4); }
+    .chip.grounded { color: var(--clear); border-color: rgba(87,204,138,.36);
+                     background: var(--clear-dim); }
+    .chip.template { color: var(--elevated); border-color: rgba(244,181,68,.36); }
+
+    .score { text-align: right; display: flex; align-items: center; gap: 14px; }
+    .score .val { font-family: var(--mono); font-size: 34px; font-weight: 600;
+                  line-height: 1; letter-spacing: -.02em; color: var(--sev-ink, var(--ink)); }
+    .score .l { font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
+                text-transform: uppercase; color: var(--ink-4); margin-top: 8px; }
+    .chevron { width: 20px; height: 20px; color: var(--ink-4); flex: none;
+               transition: transform .18s cubic-bezier(.23,1,.32,1), color .14s; }
+    summary:hover .chevron { color: var(--ink-2); }
+    details[open] .chevron { transform: rotate(180deg); }
+
+    /* ── expanded detail ────────────────────────────────────────────────── */
+    .detail { padding: 4px 22px 24px 74px; background: var(--panel-hi);
+              border-top: 1px solid var(--line); }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px 40px;
+                   padding-top: 20px; }
+    .sec { min-width: 0; }
+    .sec.full { grid-column: 1 / -1; }
+    .sec h3 { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em;
+              text-transform: uppercase; color: var(--ink-3); margin: 0 0 9px;
+              font-weight: 500; }
+    .sec p { margin: 0; color: var(--ink-2); font-size: 14px; line-height: 1.6;
+             overflow-wrap: anywhere; }
+    .why { color: var(--ink) !important; }
+    .cite { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+    .cite .cid { color: var(--clear); }
+    .cite .enh { color: var(--ink-3); }
+    .gap { font-size: 13px; color: var(--ink-2); margin-top: 6px; }
+    .gap .cid { font-family: var(--mono); color: var(--ink); }
+
+    /* score breakdown */
+    .brk { display: grid; grid-template-columns: 92px 1fr 34px; gap: 8px 12px;
+           align-items: center; }
+    .brk .bl { font-size: 12.5px; color: var(--ink-3); }
+    .brk .track { height: 6px; background: rgba(255,255,255,.06); border-radius: 3px;
+                  overflow: hidden; }
+    .brk .fill { height: 100%; background: var(--sev-ink, var(--ink-2)); border-radius: 3px; }
+    .brk .bv { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+               text-align: right; }
+    .brk .total .bl, .brk .total .bv { color: var(--ink); font-weight: 600; }
+    .brk .total .bv { font-size: 13.5px; }
+
+    .receipts { list-style: none; margin: 0; padding: 0; columns: 2; column-gap: 32px; }
+    .receipts li { font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+                   line-height: 1.7; break-inside: avoid; overflow-wrap: anywhere; }
+    .receipts li::before { content: "+ "; color: var(--clear); }
+
+    .flag-banner { grid-column: 1 / -1; }
+    .flags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .flags .chip { color: var(--elevated); border-color: rgba(244,181,68,.3); }
+
+    /* ── footer / audit strip ───────────────────────────────────────────── */
+    footer { margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--line);
+             font-family: var(--mono); font-size: 11.5px; color: var(--ink-4);
+             line-height: 1.9; letter-spacing: .02em; }
+    footer .k { color: var(--ink-3); }
+    footer .sha { color: var(--ink-3); }
+
+    @media (max-width: 720px) {
+      .wrap { padding: 0 16px 56px; }
+      h1 { font-size: 30px; }
+      .kpis { grid-template-columns: repeat(2, 1fr); }
+      .row { grid-template-columns: 40px 1fr; gap: 14px; padding: 18px 16px; }
+      .score { grid-column: 2; justify-content: flex-start; margin-top: 4px; }
+      .rank { font-size: 24px; }
+      .detail { padding-left: 16px; padding-right: 16px; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .receipts { columns: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   </style>
 </head>
 <body>
-  <h1>TawasolPay — Top 5 Cyber Risks</h1>
-  <p>Ranked deterministically over all findings; the sentence explaining each rank is grounded LLM prose.</p>
-  {% if brief.provenance.kev_staleness_warning %}
-  <div class="banner">&#9888; KEV feed is more than 7 days stale &mdash; actively-exploited status may be out of date.</div>
-  {% endif %}
-
+  {% set p = brief.provenance %}
+  {% set ns = namespace(ransom=0, exposed=0) %}
   {% for e in brief.entries %}
-  <article class="risk">
-    <h2>#{{ e.rank }} &mdash; {{ e.vulnerability_name }}</h2>
-    <p><span class="label">Assets:</span> {{ e.affected_assets | join(', ') }}
-       &middot; <span class="label">Service:</span> {{ e.service_name }}
-       ({{ e.service_owner }}, RTO {{ e.rto_hours }}h)</p>
-    {% if e.multi_env_note %}
-    <p class="note"><em>{{ e.multi_env_note }}.</em></p>
-    {% endif %}
-    <p><span class="label">Evidence:</span> {{ e.cve }} &middot; CVSS {{ '%g' | format(e.cvss) }}
-       &middot; {{ 'internet-facing' if e.internet_exposed else 'internal' }}
-       &middot; {{ 'exploit available' if e.exploit_available else 'no public exploit' }}
-       &middot; {{ 'no auth required' if not e.auth_required else 'auth required' }}
-       &middot; {{ e.days_open }} days open
-       &middot; EDR {{ 'absent' if not e.edr_installed else 'present' }}</p>
-    {% if 'exposure_model_mismatch' in e.data_flags %}
-    <p class="banner">&#9888; Inventory records this asset as internal-only, but a public
-       object policy may make it reachable via the provider URL &mdash; verify before
-       deprioritising.</p>
-    {% endif %}
-    <p class="threat{{ '' if e.intel else ' none' }}"><span class="label">Threat:</span>
-       {{ e.threat_summary }}</p>
-    <p><span class="label">Control:</span> {{ e.control_id }} {{ e.control_title }}{% if e.enhancements %},
-       particularly {{ e.enhancements | map(attribute='control_id') | join(', ') }}{% endif %}
-       &mdash; {{ e.control_summary }}</p>
-    {% for g in e.gap_controls %}
-    <p><span class="label">Also applies:</span> {{ g.control_id }} {{ g.title }}
-       &mdash; {{ g.reason }}</p>
-    {% endfor %}
-    <p><span class="label">Why this ranks #{{ e.rank }}:</span> {{ e.why_ranked }}
-       {% if e.explanation_source == 'template' %}<span class="tag">template</span>{% endif %}</p>
-    {% if e.data_flags %}
-    <p><span class="label">Flags:</span> {{ e.data_flags | join(', ') }}</p>
-    {% endif %}
-  </article>
+    {% if e.intel | selectattr('ransomware_association') | list %}{% set ns.ransom = ns.ransom + 1 %}{% endif %}
+    {% if e.internet_exposed %}{% set ns.exposed = ns.exposed + 1 %}{% endif %}
   {% endfor %}
 
-  <footer>
-    NIST catalog {{ brief.provenance.nist_catalog_version }}
-    &middot; index built {{ brief.provenance.index_built_at }}
-    &middot; NIST fetched {{ brief.provenance.nist_fetched_at }}
-    {% if brief.provenance.kev_fetched_at %}&middot; KEV fetched {{ brief.provenance.kev_fetched_at }}{% endif %}
-    &middot; generated {{ brief.provenance.generated_at }}
-  </footer>
+  <div class="statusbar"><div class="inner">
+    <span class="brand"><span class="dot"></span><b>TawasolPay</b> / Risk Console</span>
+    <span class="status-r">Generated {{ p.generated_at[:16] | replace('T', ' ') }} UTC ·
+      Pipeline {% if p.kev_staleness_warning %}<span class="warn">KEV STALE</span>{% else %}<span class="ok">Ready</span>{% endif %}</span>
+  </div></div>
+
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Risk register · Top 5 Cyber Risks</p>
+      <h1>Top risks by <span class="accent">deterministic</span> priority</h1>
+      <p class="lede">Every one of the {{ p.total_findings }} findings is scored by a fixed,
+        weighted rule set across exposure, exploitation evidence, adversary activity, business
+        impact and blast radius — the top five are shown here. The ranking is deterministic;
+        only the explanation sentence is LLM prose, and it is grounded in the cited NIST 800-53
+        control. Expand any row for the evidence and the score breakdown.</p>
+    </header>
+
+    <div class="kpis">
+      <div class="kpi"><div class="v num">{{ p.total_findings }}</div><div class="l">Findings scored</div></div>
+      <div class="kpi"><div class="v num">{{ ns.exposed }}<small>/{{ brief.entries | length }}</small></div><div class="l">Internet-exposed (top 5)</div></div>
+      <div class="kpi"><div class="v num">{{ ns.ransom }}<small>/{{ brief.entries | length }}</small></div><div class="l">Ransomware-linked</div></div>
+      <div class="kpi"><div class="v num">{{ p.explanations_llm }}<small>/{{ p.explanations_llm + p.explanations_template }}</small></div><div class="l">LLM-grounded prose</div></div>
+    </div>
+
+    {% if p.kev_staleness_warning %}
+    <div class="banner">KEV feed is more than 7 days stale — actively-exploited status may be out of date.</div>
+    {% endif %}
+
+    <div class="register">
+      {% for e in brief.entries %}
+      {% set sev = 'critical' if e.cvss >= 9 else 'high' if e.cvss >= 7 else 'medium' if e.cvss >= 4 else 'low' %}
+      {% set sevcolor = 'var(--critical)' if sev == 'critical' else 'var(--elevated)' if sev in ['high','medium'] else 'var(--ink-3)' %}
+      {% set ransom = e.intel | selectattr('ransomware_association') | list | length > 0 %}
+      {% set active = e.intel | selectattr('exploit_maturity', 'equalto', 'Active Exploitation') | list | length > 0 %}
+      <details class="risk"{% if loop.first %} open{% endif %}>
+        <summary>
+          <div class="row" style="--spine: {{ sevcolor }}; --sev-ink: {{ sevcolor }};">
+            <div class="rank num">{{ '%02d' | format(e.rank) }}</div>
+            <div class="body">
+              <h2 class="title">{{ e.vulnerability_name }}</h2>
+              <div class="asset">{{ e.affected_assets | join(', ') }} · <b>{{ e.service_name }}</b> · RTO {{ e.rto_hours }}h</div>
+              <div class="chips">
+                <span class="chip cve">{{ e.cve }}</span>
+                <span class="chip sev-{{ sev }}">{{ sev }} · CVSS {{ '%g' | format(e.cvss) }}</span>
+                {% if active %}<span class="chip ransom">Actively exploited</span>{% endif %}
+                {% if ransom %}<span class="chip ransom">Ransomware</span>{% endif %}
+                {% if e.internet_exposed %}<span class="chip risk">Internet-facing</span>{% endif %}
+                {% if e.exploit_available %}<span class="chip risk">Public exploit</span>{% endif %}
+                {% if not e.auth_required %}<span class="chip risk">No auth</span>{% endif %}
+                {% if not e.edr_installed %}<span class="chip risk">EDR absent</span>{% endif %}
+                <span class="chip">{{ e.days_open }}d open</span>
+                {% if e.explanation_source == 'llm' %}<span class="chip grounded">LLM-grounded</span>{% else %}<span class="chip template">Template</span>{% endif %}
+              </div>
+            </div>
+            <div class="score">
+              <div>
+                <div class="val num">{{ '%.1f' | format(e.score.total) }}</div>
+                <div class="l">Priority</div>
+              </div>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+          </div>
+        </summary>
+
+        <div class="detail" style="--sev-ink: {{ sevcolor }};">
+          {% if e.multi_env_note %}
+          <div class="banner" style="margin: 18px 0 0;">{{ e.multi_env_note }}.</div>
+          {% endif %}
+          {% if 'exposure_model_mismatch' in e.data_flags %}
+          <div class="banner" style="margin: 18px 0 0;">Inventory records this asset as internal-only, but a public object policy may make it reachable via the provider URL — verify before deprioritising.</div>
+          {% endif %}
+          <div class="detail-grid">
+            <div class="sec full">
+              <h3>Why it ranks #{{ e.rank }}</h3>
+              <p class="why">{{ e.why_ranked }}</p>
+            </div>
+
+            <div class="sec">
+              <h3>Threat activity</h3>
+              <p{% if not e.intel %} style="color:var(--ink-3)"{% endif %}>{{ e.threat_summary }}</p>
+            </div>
+
+            <div class="sec">
+              <h3>Cited control (NIST 800-53)</h3>
+              <p class="cite"><span class="cid">{{ e.control_id }}</span> {{ e.control_title }}{% if e.enhancements %}
+                <span class="enh">· particularly {{ e.enhancements | map(attribute='control_id') | join(', ') }}</span>{% endif %}</p>
+              <p style="margin-top:7px">{{ e.control_summary }}</p>
+              {% for g in e.gap_controls %}
+              <p class="gap"><span class="cid">{{ g.control_id }}</span> {{ g.title }} — {{ g.reason }}</p>
+              {% endfor %}
+            </div>
+
+            <div class="sec">
+              <h3>Score breakdown</h3>
+              {% set comps = [('Exposure', e.score.exposure), ('Exploitation', e.score.exploitability), ('Adversary', e.score.adversary), ('Business', e.score.business), ('Control gap', e.score.control_gap), ('Blast radius', e.score.blast_radius)] %}
+              <div class="brk">
+                {% for label, val in comps %}
+                <div class="bl">{{ label }}</div>
+                <div class="track"><div class="fill" style="width: {{ (val / e.score.total * 100) if e.score.total else 0 }}%"></div></div>
+                <div class="bv num">{{ '%g' | format(val) }}</div>
+                {% endfor %}
+                <div class="bl total" style="grid-column:1">Total</div>
+                <div class="total"></div>
+                <div class="bv total num">{{ '%.1f' | format(e.score.total) }}</div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <h3>Receipts — every point, sourced</h3>
+              <ul class="receipts">
+                {% for r in e.score.reasons %}<li>{{ r }}</li>{% endfor %}
+              </ul>
+            </div>
+
+            {% if e.data_flags %}
+            <div class="sec full flag-banner">
+              <h3>Data flags</h3>
+              <div class="flags">
+                {% for f in e.data_flags %}<span class="chip">{{ f }}</span>{% endfor %}
+              </div>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </details>
+      {% endfor %}
+    </div>
+
+    <footer>
+      <span class="k">NIST catalog</span> {{ p.nist_catalog_version }} ·
+      <span class="k">sha</span> <span class="sha">{{ p.nist_catalog_sha256[:12] }}</span> ·
+      <span class="k">index built</span> {{ p.index_built_at[:19] | replace('T',' ') }} ·
+      <span class="k">NIST fetched</span> {{ p.nist_fetched_at[:19] | replace('T',' ') }}{% if p.kev_fetched_at %} ·
+      <span class="k">KEV fetched</span> {{ p.kev_fetched_at[:19] | replace('T',' ') }}{% endif %} ·
+      <span class="k">generated</span> {{ p.generated_at[:19] | replace('T',' ') }}
+    </footer>
+  </div>
 </body>
 </html>

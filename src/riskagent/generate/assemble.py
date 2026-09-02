@@ -53,6 +53,9 @@ class Provenance(BaseModel):
     # Populated after the LLM stage — how many of the 5 were real prose vs template.
     explanations_llm: int = 0
     explanations_template: int = 0
+    # Total findings scored (all of them) — surfaced so the brief can show "top 5 of N
+    # scored", making the never-truncate-before-scoring invariant visible to a reader.
+    total_findings: int = 0
     # KEV fields are populated in phase 7; the keys exist now so the shape is stable.
     kev_fetched_at: str | None = None
     kev_coverage_pct: float | None = None
@@ -287,6 +290,7 @@ def build_state(
         update={
             "explanations_llm": sum(1 for e in entries if e.explanation_source == "llm"),
             "explanations_template": sum(1 for e in entries if e.explanation_source == "template"),
+            "total_findings": len(findings),  # all scored — top-5 is a view, not a cut
         }
     )
     brief = RiskBrief(entries=entries, provenance=provenance)
