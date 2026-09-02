@@ -155,3 +155,30 @@ def test_offline_fallback_uses_cache(catalog: NistCatalog) -> None:
     cached = load_catalog(offline=True)
     assert cached.source == "cache"
     assert cached.catalog_sha256 == catalog.catalog_sha256
+
+
+def test_precomputed_pack_retrieval_matches_model_exactly(store: ChromaControlStore) -> None:
+    """§8 deploy invariant: the deployed model-free path must return byte-identical
+    retrieval to the model path. Precomputed vectors ARE the model's vectors, so any
+    divergence here is a wiring bug — the exact check the spec asks for."""
+    import json
+
+    from riskagent.generate.assemble import score_all_findings
+    from riskagent.ingest.csv_loader import load_all
+    from riskagent.rag.pack import PrecomputedEmbedder, build_query_pack
+
+    data = load_all()
+    pack = build_query_pack(data, store)  # embedded with the same model the index used
+    pack = json.loads(json.dumps(pack))  # round-trip exactly as the shipped file does
+    # a model-free store over the SAME index, embedding only via the precomputed table
+    packed = ChromaControlStore(embed_fn=PrecomputedEmbedder(pack))
+
+    findings = score_all_findings(data)
+    assert len(findings) == 114  # all findings covered, nothing truncated
+    for finding in findings:
+        ref = retrieve(finding, store)
+        got = retrieve(finding, packed)
+        assert [c.control_id for c in got.chunks] == [c.control_id for c in ref.chunks]
+        assert [c.distance for c in got.chunks] == [c.distance for c in ref.chunks]
+        assert [g.control_id for g in got.gap_controls] == [g.control_id for g in ref.gap_controls]
+        assert got.flags == ref.flags

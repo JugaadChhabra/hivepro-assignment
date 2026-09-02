@@ -443,20 +443,49 @@ README caveat, stated plainly: one annotator, so this is calibrated judgement ra
 | **5** | `select.py`, `llm.py`, `guard.py`, `render.py`, `app.py` | 2.5 | Local server renders a readable top-5 |
 | **6** | Golden set + `eval.py`, blast-radius signals, tune weights | 2.5 | Metrics printed, weights justified by measurement |
 | **7** | `report_parser.py` (incl. `objective`), `kev.py`, `trace.py` | 1.5 | Campaign cross-check runs, KEV coverage logged |
-| **8** | Dockerfile, deploy to HF Spaces, keep-alive, README | 1.5 | Public URL live, three README answers written |
+| **8** | Dockerfile, deploy to Render, keep-alive, README | 1.5 | Public URL live, three README answers written |
 
 **Phases 1–5 produce a working system.** If time collapses, stop after 5 and write the README honestly. Phases 6–8 are what separate this from a working notebook — do not skip 6.
 
-**Deploy to Hugging Face Spaces, Docker SDK, not Render.** Decided, not left open:
+**Deploy to Render, Docker runtime (CHANGED from Hugging Face Spaces).**
 
-- Render's free web service spins down after 15 minutes of no traffic and takes 30–60s to wake. A reviewer opening the link days after submission gets a blank page and may assume it's broken.
-- HF Spaces on free CPU pause after 48 hours of inactivity — far more forgiving — and a lightweight keep-alive (below) keeps it from ever sleeping during the review window.
-- Render's free tier has an **ephemeral filesystem**: local changes are lost on every spin-down/restart. The baked-in Chroma index and cached KEV/NIST files would be wiped on every wake, forcing a rebuild-on-cold-start that the plan is specifically designed to avoid.
-- HF free CPU gives 2 vCPU / 16GB RAM against Render's 512MB — comfortable headroom for `sentence-transformers` + torch + Chroma.
+*Original decision (phase-8 planning): Hugging Face Spaces, not Render*, on four
+grounds — Render's 15-min spin-down showing a reviewer a blank page; HF's more
+forgiving 48-hour pause; Render's ephemeral filesystem wiping a baked index; and HF's
+2 vCPU / 16GB vs Render's 512MB giving headroom for `sentence-transformers` + torch.
 
-Concretely: Space SDK = `docker`, `app_port: 7860` in the Space README frontmatter, index built during `docker build` and shipped inside the image, `GROQ_API_KEY` set as a Space secret, never committed — the JD names careless credential handling as the one thing they don't tolerate.
+*What changed:* in 2026 Hugging Face made **Docker Spaces a paid-plan feature**, so
+the free HF path no longer exists. The target moved to **Render's free tier**. This
+is recorded rather than quietly swapped so the reversal is traceable — and because
+two of the original objections had to be *engineered away*, not waved off:
 
-Add `.github/workflows/keep-alive.yml`: a scheduled job hitting `GET /healthz` every 12 hours. This also means the keep-alive ping doubles as a freshness monitor — if `kev_staleness_warning` ever flips true, it's visible in the workflow logs, not just on the page.
+- **512MB RAM.** The original plan leaned on HF's 16GB to run torch at runtime. On
+  Render that is impossible, so the embedding model is removed from the runtime
+  entirely. The corpus (NIST controls) and query set (≤114 findings → one templated
+  query each) are both static and known at build time, so `docker build` embeds the
+  catalog **and** precomputes every finding's query vector, and ships both in the
+  image. Runtime retrieval is a vector lookup — no torch, no `sentence-transformers`.
+  Measured RSS ~101MB under a 512MB cap. Recall@3 is unchanged (0.955) because the
+  precomputed vectors are the same vectors, pinned by an equality test over all 114.
+  Tradeoff, stated honestly in the README: the deployed system is batch-only over a
+  fixed data pack; a new finding at runtime would need a rebuild.
+- **Ephemeral filesystem.** Now a non-issue for the reason it was once a blocker: the
+  Chroma index + query pack live in the *image*, never a runtime write. `cache/kev.json`
+  and `traces.jsonl` are lost on restart, which is acceptable — KEV re-fetches on
+  startup, traces are per-run.
+- **Spin-down.** Handled by dropping the keep-alive from every 12h to **every 10
+  minutes** (inside Render's 15-min idle window), with the README noting GitHub cron
+  can slip and an external pinger (UptimeRobot) is more reliable if it matters.
+
+Concretely: `render.yaml` declares a Docker web service on the free plan, index +
+query pack built during `docker build` and shipped in the image, port from `$PORT`,
+`GROQ_API_KEY` set as a Render environment secret, never committed — the JD names
+careless credential handling as the one thing they don't tolerate.
+
+Add `.github/workflows/keep-alive.yml`: a scheduled job hitting `GET /healthz` every
+10 minutes. The keep-alive ping doubles as a freshness monitor — if
+`kev_staleness_warning` ever flips true, it's visible in the workflow logs, not just
+on the page.
 
 ---
 

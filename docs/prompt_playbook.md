@@ -529,34 +529,55 @@ That last one is the point of having built phase 6 first.
 
 ## Phase 8 — Ship
 
+**TARGET CHANGED: Hugging Face Spaces → Render.** HF made Docker Spaces a paid
+feature in 2026, so the free path is Render's free tier. The original HF prompt is
+preserved below (struck through) for traceability; the Render prompt is what was
+executed. The change forced two real design moves — a model-free runtime for the
+512MB cap, and a 10-minute keep-alive for the 15-min spin-down — recorded in
+implementation_plan.md §8.
+
+~~Original (HF Spaces):~~ *Dockerfile multi-stage, build the Chroma index during
+`docker build`, expose 7860 (HF requirement), `GROQ_API_KEY` from a Space secret,
+Space README frontmatter `sdk: docker` + `app_port: 7860`, keep-alive every 12h.*
+
 ```
-Dockerfile + deploy to Hugging Face Spaces (Docker SDK) + keep-alive + README.
+Dockerfile + deploy to Render (Docker runtime) + keep-alive + README.
+
+WHY RENDER, NOT HF SPACES: HF now requires a paid plan for Docker Spaces
+(policy changed 2026). Render free tier it is. Two constraints need real
+handling (below), recorded so the switch is traceable, not arbitrary.
 
 Dockerfile: multi-stage. BUILD THE CHROMA INDEX DURING docker build so the
-deployed service has no cold-start embedding pass. Expose port 7860 —
-required by HF Spaces. GROQ_API_KEY comes from a Space secret at runtime — it
-must not appear in the image, the repo, or any commit in the history. Check
-git log for accidental commits before pushing.
+deployed service has no cold-start embedding pass. Port from $PORT env var,
+not hardcoded. GROQ_API_KEY comes from a Render environment secret at runtime —
+it must not appear in the image, the repo, or any commit in the history. Check
+git log -p for accidental commits before pushing.
 
-Space README frontmatter needs sdk: docker and app_port: 7860. Deploy and
-verify the public URL renders the brief and that /healthz, /api/risks,
-/api/findings, /traces all respond, and that /healthz returns real
-kev_fetched_at / nist_catalog_version values, not placeholders.
+CONSTRAINT 1 — 512MB RAM. Remove the model from runtime entirely: the corpus
+AND query set are static and known at build time (≤114 findings, one templated
+query each). At build: embed the NIST catalog AND precompute every finding's
+query vector; ship both in the image. At runtime: retrieval is a vector lookup
+against precomputed vectors — no sentence-transformers, no torch. Keep the
+model as a build-time-only dependency (the `build` extra). Must not change
+recall@3: re-run eval and confirm 0.955 — same vectors, so a change means a
+wiring bug. If memory still fails, report measured RSS before guessing.
+
+CONSTRAINT 2 — spin-down after 15 min idle (~1 min cold start). keep-alive
+every 10 minutes hitting /healthz; note GitHub cron can slip past 15 min so an
+external pinger (UptimeRobot) is more reliable if it matters. Render's
+ephemeral fs is fine — index lives in the image; cache/kev.json and
+traces.jsonl are lost on restart (KEV refetches, traces are per-run) — say so.
+
+Deploy (render.yaml or dashboard) and verify the public URL renders the brief
+and that /healthz, /api/risks, /api/findings, /traces all respond, and that
+/healthz returns real kev_fetched_at / nist_catalog_version, not placeholders.
 
 LLM SMOKE TEST (do not skip — the brief looks fine even when the LLM does
 nothing): after deploy, GET /api/risks and assert at least one entry has
-explanation_source: "llm". If all five come back "template" on the Space, the
-Groq key or network is wrong and every explanation silently degraded to a
-scorer-reason template while the page still renders. /healthz already reports
-explanations_llm / explanations_template counts (phase 5) — check them there too,
-and note the split in the README so a reviewer sees the system working as
-designed rather than silently degraded.
-
-Add .github/workflows/keep-alive.yml: a scheduled job (every 12 hours) that
-GETs /healthz on the deployed Space and fails the workflow if
-kev_staleness_warning is true or the request errors. This keeps the free-tier
-Space warm AND acts as a freshness monitor — check the workflow logs, not just
-the page, if something looks stale later.
+explanation_source: "llm". If all five come back "template", the Groq key or
+network is wrong and every explanation silently degraded to a scorer-reason
+template while the page still renders. /healthz reports explanations_llm /
+explanations_template — check there too, and note the split in the README.
 
 README: fill in §9 of implementation_plan.md. Write the three supporting
 answers in my voice, specific to this build, using real numbers from eval.py.
@@ -571,9 +592,9 @@ for v1.
 
 Also include: the architecture diagram, make commands, the weights table with
 its provenance in the MDR analyst notes, current eval numbers, the
-one-annotator caveat on the golden set, and a one-line data-freshness note —
-KEV and NIST are both fetched live and checkable at /healthz, not bundled
-static copies.
+one-annotator caveat on the golden set, and a data-freshness note — KEV fetched
+live and checkable at /healthz; NIST pinned at build (model-free runtime) with
+version + sha at /healthz.
 ```
 
 **Exit:** public URL live, README complete. Final reviewer pass over the whole repo.

@@ -19,6 +19,7 @@ touching ``retrieve``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
@@ -69,11 +70,15 @@ class ChromaControlStore:
         collection_name: str | None = None,
         model_name: str | None = None,
         catalog_version: str = config.NIST_CATALOG_VERSION,
+        embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
     ) -> None:
         self._persist_dir = persist_dir or str(config.CHROMA_DIR)
         self._collection_name = collection_name or config.CHROMA_COLLECTION
         self._model_name = model_name or config.EMBED_MODEL_NAME
         self._catalog_version = catalog_version
+        # embed_fn injected -> no model, no torch (the deployed runtime path). When
+        # None, the model is lazy-loaded on first embed (build time / local dev).
+        self._embed_fn = embed_fn
         self._model: SentenceTransformer | None = None
         self._client = self._make_client()
 
@@ -84,12 +89,19 @@ class ChromaControlStore:
         return chromadb.PersistentClient(path=self._persist_dir)
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
+        if self._embed_fn is not None:  # precomputed-vector lookup — no model, no torch
+            return self._embed_fn(texts)
         if self._model is None:
             from sentence_transformers import SentenceTransformer
 
             self._model = SentenceTransformer(self._model_name)
         vectors = self._model.encode(texts, normalize_embeddings=True)
         return [[float(x) for x in row] for row in vectors]
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Public embedding pass — used at build time to precompute query vectors so
+        the two share the exact model/normalisation the index was built with."""
+        return self._embed(texts)
 
     def _collection(self, provenance: dict[str, str] | None = None) -> Collection:
         metadata = {"hnsw:space": "cosine"}
@@ -111,8 +123,13 @@ class ChromaControlStore:
         # Idempotent: skip only if the row count AND the catalog hash both match.
         if collection.count() == len(controls) and stored.get("catalog_sha256") == catalog_sha256:
             return
-        if collection.count() > 0:
-            self._client.delete_collection(self._collection_name)  # catalog changed -> rebuild
+        # Rebuild. get_or_create_collection does NOT update the metadata of an existing
+        # collection, and the check above already materialised one (with only
+        # hnsw:space), so we MUST delete before recreating — otherwise the provenance
+        # never persists and the skip check can never match on a later run (which, in
+        # the model-free deploy, would try to re-embed and fail). Delete unconditionally
+        # (the collection exists at this point, empty or not).
+        self._client.delete_collection(self._collection_name)
         collection = self._collection(
             provenance={
                 "nist_catalog_version": self._catalog_version,

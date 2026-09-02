@@ -8,10 +8,13 @@ version = "0.1.0"
 description = "TawasolPay Cyber Risk Assistant"
 requires-python = ">=3.11"
 # Runtime dependencies are added phase-by-phase, each with a one-line justification.
+# NOTE (§8 deploy): sentence-transformers/torch are DELIBERATELY NOT runtime deps.
+# The embedding model runs at build time only (embed the catalog + precompute the
+# query vectors); the deployed service does a vector lookup against those precomputed
+# vectors, so it fits Render's 512MB free tier. See the `build` extra below.
 dependencies = [
     "pydantic>=2.7",  # typed data contracts — the spine of the pipeline (§2)
     "chromadb>=0.5",  # persistent local vector store for NIST controls only (§5)
-    "sentence-transformers>=3.0",  # local CPU embeddings, all-MiniLM-L6-v2, no API key (§5)
     "fastapi>=0.110",  # the read-only service (§6)
     "uvicorn>=0.29",  # ASGI server for `make run` (§6)
     "jinja2>=3.1",  # deterministic HTML/Markdown rendering, no model calls (§6)
@@ -20,11 +23,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Build-time only: embeds the NIST catalog and precomputes the per-finding query
+# vectors during `docker build`. Pulls torch — never installed in the runtime image.
+build = [
+    "sentence-transformers>=3.0",  # local CPU embeddings, all-MiniLM-L6-v2, no API key (§5)
+]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "pytest>=8.0",
     "httpx>=0.27",  # FastAPI TestClient transport
+    "sentence-transformers>=3.0",  # eval recall@3 + rag integration tests need the real model
 ]
 
 [tool.setuptools.packages.find]

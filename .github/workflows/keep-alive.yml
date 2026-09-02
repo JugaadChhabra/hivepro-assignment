@@ -1,29 +1,35 @@
 name: keep-alive
 
-# Pings the deployed Space's /healthz every 12 hours. Two jobs in one:
-#   1. keeps the free-tier Hugging Face Space warm (it sleeps when idle), and
-#   2. acts as a freshness monitor — the workflow FAILS if the request errors or
-#      if kev_staleness_warning is true (KEV feed >7 days stale on the Space).
+# Pings the deployed service's /healthz every 10 minutes. Two jobs in one:
+#   1. keeps the Render free-tier service warm — it spins down after ~15 min idle
+#      (~1 min cold start), so a 10-minute ping stays inside that window, and
+#   2. acts as a freshness monitor — the workflow FAILS if the request errors or if
+#      kev_staleness_warning is true (KEV feed >7 days stale on the deployed copy).
 # Check the workflow logs, not just the page, if something looks stale later.
 #
-# Setup: set the repo variable SPACE_HEALTH_URL to the Space health endpoint, e.g.
-#   gh variable set SPACE_HEALTH_URL --body "https://<owner>-<space>.hf.space/healthz"
+# CAVEAT: GitHub's scheduled runners are best-effort and can be delayed well past
+# 10 minutes under load, so an occasional cold start is still possible. If keeping
+# it warm actually matters, an external pinger (e.g. UptimeRobot free, 5-min checks)
+# is more reliable than cron here.
+#
+# Setup: set the repo variable SPACE_HEALTH_URL to the health endpoint, e.g.
+#   gh variable set SPACE_HEALTH_URL --body "https://<service>.onrender.com/healthz"
 # (or Settings → Secrets and variables → Actions → Variables).
 
 on:
   schedule:
-    - cron: "0 */12 * * *" # every 12 hours (00:00 and 12:00 UTC)
+    - cron: "*/10 * * * *" # every 10 minutes — inside Render's 15-min spin-down window
   workflow_dispatch: {} # allow manual runs
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve Space health URL
+      - name: Resolve health URL
         run: |
           URL="${{ vars.SPACE_HEALTH_URL }}"
           if [ -z "$URL" ]; then
-            echo "::error::Repo variable SPACE_HEALTH_URL is not set. Set it to https://<owner>-<space>.hf.space/healthz"
+            echo "::error::Repo variable SPACE_HEALTH_URL is not set. Set it to https://<service>.onrender.com/healthz"
             exit 1
           fi
           echo "HEALTH_URL=$URL" >> "$GITHUB_ENV"
@@ -31,16 +37,16 @@ jobs:
       - name: Ping /healthz and check KEV freshness
         run: |
           echo "GET $HEALTH_URL"
-          # A cold free-tier Space can take ~30-60s to wake; retry before giving up.
+          # A cold free-tier service can take ~1 min to wake; retry before giving up.
           for attempt in 1 2 3 4 5; do
             if body=$(curl -fsS --max-time 90 "$HEALTH_URL"); then
               echo "response: $body"
               stale=$(printf '%s' "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('kev_staleness_warning'))")
               if [ "$stale" = "True" ]; then
-                echo "::error::kev_staleness_warning is true — the served KEV feed is >7 days stale on the Space."
+                echo "::error::kev_staleness_warning is true — the served KEV feed is >7 days stale."
                 exit 1
               fi
-              echo "Space is healthy and KEV is fresh (kev_staleness_warning=$stale)."
+              echo "Service is healthy and KEV is fresh (kev_staleness_warning=$stale)."
               exit 0
             fi
             echo "attempt $attempt failed; waiting 20s before retry..."

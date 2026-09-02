@@ -31,12 +31,31 @@ from riskagent.rag.index import ChromaControlStore
 
 
 def default_state_builder() -> AppState:
-    """Build the real cached state: data + live NIST catalog + Chroma + Groq."""
+    """Build the real cached state: data + NIST catalog + Chroma + Groq.
+
+    Two modes, chosen by whether the build-time query-vector pack is present:
+
+    * **Data-pack (deployed)** — ``cache/query_embeddings.json`` exists: retrieval
+      uses precomputed query vectors, so no embedding model is loaded (no torch,
+      fits Render's 512MB). The NIST catalog is read from the baked cache so it
+      matches the shipped index exactly; a live re-fetch could differ and would
+      need re-embedding, which the runtime deliberately cannot do.
+    * **Model (local dev)** — no pack: the catalog is fetched live and the model
+      embeds queries on demand, exactly as before.
+
+    KEV is fetched live at startup in BOTH modes (it needs no embedding)."""
     data = load_all()
-    catalog = load_catalog()
+    use_pack = config.QUERY_EMBEDDINGS_PATH.exists()
+    if use_pack:
+        from riskagent.rag.pack import PrecomputedEmbedder
+
+        catalog = load_catalog(offline=True)  # the baked catalog behind the shipped index
+        store = ChromaControlStore(embed_fn=PrecomputedEmbedder.load())
+    else:
+        catalog = load_catalog()  # live fetch
+        store = ChromaControlStore()
     kev = load_kev()  # live fetch; falls back to cache, or None if wholly unavailable
-    store = ChromaControlStore()
-    store.build(catalog.controls, catalog_sha256=catalog.catalog_sha256)
+    store.build(catalog.controls, catalog_sha256=catalog.catalog_sha256)  # skips if index matches
     meta = store.collection_metadata()
     provenance = Provenance(
         nist_catalog_version=meta.get("nist_catalog_version", ""),

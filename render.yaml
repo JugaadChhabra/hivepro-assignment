@@ -1,0 +1,16 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec).
+# Deploy: push this repo to GitHub, then New → Blueprint on Render and point it here,
+# or create a Web Service (Docker) manually with the same settings.
+services:
+  - type: web
+    name: tawasolpay-risk
+    runtime: docker
+    plan: free # 512MB RAM, spins down after ~15 min idle (see keep-alive workflow)
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # Set the real value in the Render dashboard (Environment → Secret). Never
+      # committed. Absent it, explanations degrade to templates and the page renders.
+      - key: GROQ_API_KEY
+        sync: false

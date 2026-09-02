@@ -31,6 +31,11 @@ TRACE_PATH = CACHE_DIR / "traces.jsonl"  # one JSONL record per pipeline run (§
 NIST_CACHE_PATH = CACHE_DIR / "nist_sp800-53r5.json"
 CHROMA_DIR = CACHE_DIR / "chroma"
 CHROMA_COLLECTION = "nist_800_53"
+# Per-finding query vectors, precomputed at build time (§8 deploy). Its presence is
+# what switches the app into model-free "data pack" mode; absent, the app embeds
+# live with the model (local dev). Holds QUERY vectors only — never enters Chroma,
+# so the "NIST controls and nothing else" vector-store invariant is untouched.
+QUERY_EMBEDDINGS_PATH = CACHE_DIR / "query_embeddings.json"
 
 # --- CISA KEV catalog (§3, §7) — note the default branch is "develop", a main URL 404s ---
 KEV_URL = (

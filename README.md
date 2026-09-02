@@ -1,13 +1,3 @@
----
-title: TawasolPay Cyber Risk Assistant
-emoji: 🛡️
-colorFrom: indigo
-colorTo: blue
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # TawasolPay Cyber Risk Assistant
 
 Ranks TawasolPay's 114 open vulnerabilities into a defensible top-5 risk brief and
@@ -15,10 +5,10 @@ cites the NIST SP 800-53 control for each. Every number is traceable to its sour
 the LLM writes the explanation sentence and nothing else — it never decides a rank,
 a score, or which control applies.
 
-**Live:** the Space serves the rendered brief at `/`, with `/api/risks`,
-`/api/findings` (all 114, so you can verify nothing was truncated before scoring),
-`/traces`, and `/healthz` (real provenance — catalog version, fetch timestamps, and
-the LLM-vs-template split, not a bare `ok`).
+**Live:** deployed as a Docker web service on Render. It serves the rendered brief
+at `/`, with `/api/risks`, `/api/findings` (all 114, so you can verify nothing was
+truncated before scoring), `/traces`, and `/healthz` (real provenance — catalog
+version, fetch timestamps, and the LLM-vs-template split, not a bare `ok`).
 
 ## Architecture
 
@@ -45,13 +35,17 @@ Two data paths, kept deliberately separate — this split is the design, not dec
         ▼
   select top-5  (dedupe identical vpn-edge / load-balancer pairs BEFORE the cut)
         │
-        ├──────────────► retrieve NIST controls ◄── Chroma (NIST CONTROLS ONLY) ◄── NIST catalog  ──live fetch──►
-        │   SEMANTIC: all-MiniLM-L6-v2, cosine                                        + all-MiniLM embeddings
+        ├──────────────► retrieve NIST controls ◄── Chroma (NIST CONTROLS ONLY)
+        │   SEMANTIC: vector LOOKUP against precomputed query vectors — no model at runtime
         ▼
   guard ─► Groq LLM writes PROSE ONLY ─► explanation_source: llm | template
         │   (rank, evidence, control already decided; a refusal degrades prose, not the ranking)
         ▼
   RiskBrief ─► HTML report  ·  /api/risks  ·  /api/findings (all 114)  ·  /healthz  ·  /traces
+
+  ── BUILD TIME (docker build, model present) ─────────────────────────────────
+  NIST catalog ──live fetch──► all-MiniLM-L6-v2 ──► Chroma index + per-finding
+                                                    query-vector pack (shipped in image)
 ```
 
 **Contamination invariant:** no CVSS score, no asset attribute, no vulnerability row
@@ -234,8 +228,9 @@ number, the exact failure the methodology exists to prevent.
 The page looks identical whether the LLM writes the prose or a template does, so the
 system reports the split explicitly. `/healthz` returns `explanations_llm` and
 `explanations_template` (of the 5 top risks), and `/api/risks` carries
-`explanation_source: "llm" | "template"` per entry. **On the deployed Space, with the
-Groq key set, at least one entry reads `"llm"`.** If all five come back `"template"`,
+`explanation_source: "llm" | "template"` per entry. **On the deployed service, with
+the Groq key set, at least one entry reads `"llm"`** (measured: 4 of 5 grounded, 1
+template). If all five come back `"template"`,
 the Groq key or network is wrong and every explanation has silently degraded to a
 scorer-reason template — the ranking is still correct (the LLM never touched it), but
 the prose is not the model's. This split is surfaced on purpose so a reviewer sees the
@@ -243,19 +238,29 @@ system working as designed rather than quietly degraded.
 
 ## Data freshness
 
-KEV and the NIST catalog are **fetched live at startup** and cached with a timestamp
-(`kev_fetched_at`, `nist_fetched_at`) — not bundled static copies. The NIST catalog
-version is stamped into the Chroma index at build time and its SHA-256 travels with
-it; both are checkable at `/healthz`. A failed fetch falls back to the cached copy,
-and that fallback is **not silent**: if the served KEV copy is more than 7 days old,
+**KEV is fetched live at startup** and cached with a timestamp (`kev_fetched_at`) —
+not a bundled static copy. A failed fetch falls back to the cached copy, and that
+fallback is **not silent**: if the served KEV copy is more than 7 days old,
 `kev_staleness_warning` flips true on `/healthz` and a banner renders in the brief.
+
+**The NIST catalog is pinned at build time.** It is fetched live during `docker
+build`, embedded into the Chroma index, and its version + SHA-256 are stamped into
+the index and surfaced at `/healthz`. At runtime the deployed service reads the
+*baked* catalog (so `nist_fetched_at` reflects the build), because the embedding
+model is not present at runtime and a newer catalog could not be re-embedded — see
+the deployment tradeoff below. This is a deliberate consequence of the model-free
+runtime, not a freshness regression: the version and hash are always visible and a
+redeploy re-fetches. (Locally, without the data pack, NIST is still fetched live at
+startup and embedded on demand.)
+
 Recency scoring uses a **fixed reference date** (`config.REFERENCE_DATE =
 2026-04-24`, the freshest intel date) so scores are reproducible and don't drift as
 the wall clock moves past this synthetic dataset.
 
-> The Chroma index is built during `docker build` (see `Dockerfile` +
-> `src/riskagent/prewarm.py`), so the deployed container has no cold-start embedding
-> pass. The embedding pass is what's baked; KEV and NIST are still fetched live at boot.
+**Ephemeral filesystem.** Render's disk is ephemeral, which is fine here: the Chroma
+index and query pack live in the *image*, not in a runtime write. `cache/kev.json`
+and `cache/traces.jsonl` are lost on every restart — acceptable by design, because
+KEV re-fetches on startup and traces are per-run observability, not durable state.
 
 ## Intel-source contradiction detection
 
@@ -288,13 +293,44 @@ Or with Docker (mirrors the deployed image):
 ```bash
 docker build -t tawasolpay-risk .
 docker run -p 7860:7860 -e GROQ_API_KEY=$GROQ_API_KEY tawasolpay-risk
+# Render sets $PORT; the image honours it and defaults to 7860 locally.
 ```
 
-## Deployment (Hugging Face Spaces, Docker SDK)
+## Deployment (Render, Docker runtime)
 
-This repo *is* the Space: the frontmatter above declares `sdk: docker` and
-`app_port: 7860`. `GROQ_API_KEY` is set as a **Space secret** (Settings → Variables
-and secrets) and injected at runtime — it is never in the image, the repo, or the git
-history. A scheduled GitHub Action (`.github/workflows/keep-alive.yml`) pings
-`/healthz` every 12 hours to keep the free-tier Space warm and to fail loudly if
-`kev_staleness_warning` ever goes true.
+Deployed as a Docker web service on Render's free tier (`render.yaml`).
+`GROQ_API_KEY` is a Render **environment variable / secret**, injected at runtime —
+never in the image, the repo, or the git history. A scheduled GitHub Action
+(`.github/workflows/keep-alive.yml`) pings `/healthz` **every 10 minutes** to keep
+the service warm and to fail loudly if `kev_staleness_warning` ever goes true.
+
+**Why Render, not Hugging Face Spaces.** The original target was an HF Docker Space;
+HF changed policy in 2026 to require a paid plan for Docker Spaces, so this moved to
+Render's free tier. Two Render constraints drove real design, not just config:
+
+**1. 512MB RAM — the model is removed from the runtime entirely.** `torch` +
+`sentence-transformers` alone would blow the budget. But both the corpus (NIST
+controls) and the query set are static and known at build time — at most 114
+findings, each producing exactly one deterministic templated query. So `docker
+build` embeds the catalog into Chroma **and** precomputes the query vector for every
+finding (`src/riskagent/prewarm.py` → `src/riskagent/rag/pack.py`), and ships both in
+the image. At runtime, retrieval is a vector **lookup** against those precomputed
+vectors (`ChromaControlStore(embed_fn=...)`) — no `sentence-transformers`, no
+`torch`, no model load. `sentence-transformers` is a build-time-only dependency (the
+`build` extra in `pyproject.toml`), so the embedding pipeline is still real and
+reproducible, not hardcoded output. **Measured RSS on the deployed image: ~101MB
+under a 512MB cap (~20%).** Retrieval is byte-identical to the model path — the
+precomputed vectors *are* the model's vectors, pinned by
+`tests/test_rag_integration.py::test_precomputed_pack_retrieval_matches_model_exactly`
+across all 114 findings, and recall@3 is unchanged at 0.955.
+
+  *Honest tradeoff:* this makes the deployed system **batch-only over a fixed data
+  pack**. A brand-new finding appearing at runtime would need a rebuild to get its
+  query vector embedded. That is a deployment choice for a static-dataset assignment,
+  not an architectural limit — the same code runs the live model locally (no pack).
+
+**2. Spin-down.** Render free spins the service down after ~15 min idle (~1 min cold
+start). The keep-alive workflow pings every 10 minutes to stay inside that window.
+Note that GitHub's scheduled runners are best-effort and can be delayed past 15 min
+under load, so an occasional cold start is still possible; an external pinger
+(UptimeRobot free) is more reliable if it matters.
