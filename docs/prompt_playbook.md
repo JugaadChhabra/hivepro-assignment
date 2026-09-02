@@ -318,6 +318,42 @@ Finally: measure retrieval recall@3. If it is below 0.8, add rank_bm25 and
 fuse with reciprocal rank fusion at k=60, then re-measure and report both
 numbers. If it is above 0.8, do not add it, and say in the README that the
 decision was measured rather than assumed.
+
+BLAST RADIUS — a new scorer group, added in this phase, NOT tuning.
+
+Hand-ranking surfaced a consistent class of pair the scorer gets wrong: it
+models likelihood well and consequence barely. Two signals fix it. Add them
+AFTER the golden set exists and BEFORE weight tuning, and report the metric
+delta for each separately so their contribution is measurable.
+
+1. transitive_dependents — business_services.csv has a depends_on column we
+   are currently not using at all. Parse it into edges in join.py, compute the
+   transitive dependent count per service (how many services fail, directly or
+   indirectly, if this one does). Split on comma, strip, empty = none.
+   TRAVERSE WITH A VISITED SET — the data is acyclic today, but a cycle must
+   not be discovered as a production hang.
+   Expected: Identity Verification 5, Customer Login 4, Payment Processing 1,
+   Software Delivery 1, Testing Platform 0. Assert these — if your numbers
+   differ, the traversal is wrong.
+   Score: >=3 dependents +6, 1-2 +3, 0 +0.
+
+2. campaign objective — wire the term but leave it DORMANT this phase. It
+   depends on report_parser.py, which is phase 7. Same pattern as the KEV
+   term: the branch exists, contributes 0, and comes alive in phase 7.
+   Score when live: credential_theft or ip_theft +6, payment_fraud +4.
+
+Keep this as its own scoring group. Do not fold it into Business — the
+existing group maxima must stay stable so the tuning table shows before/after
+cleanly.
+
+TESTS:
+- transitive_dependents matches the five expected values above
+- a synthetic cyclic depends_on graph terminates and does not hang
+- a service with empty depends_on scores 0 on this group
+- the objective term contributes exactly 0 for all 114 findings this phase
+- pairwise satisfaction rate BEFORE and AFTER adding blast radius, reported
+  separately — this is the evidence that the signal was discovered through
+  evaluation rather than assumed
 ```
 
 **Exit:** three metrics printed, a weight-change table, a measured decision on hybrid retrieval. Reviewer.
@@ -334,13 +370,26 @@ CROSS-CHECK against threat_intelligence.csv — both sources claim CrimsonJackal
 exploits CVE-2024-21762. Assert agreement; on mismatch append to data_flags and
 prefer the CSV. Do not merge.
 
-KNOWN CONFLICT (found in phase 3, verify + flag here — do not let it surprise you):
-threat_intelligence.csv TI-3023 (WinterViper) has ransomware_association = Yes, but
-synthetic_threat_report.md §5 says WinterViper "Ransomware: No — financial fraud
-and data theft focused". The cross-check MUST catch this: flag it, prefer the CSV
-(so phase-3 scores stay unchanged), do not merge. README should cite it as a
-detected source contradiction — exactly the "flag uncertainty instead of guessing"
-behaviour the JD asks for.
+KNOWN CONFLICT, already found — do not treat as a surprise: TI-3023 says
+WinterViper ransomware_association = Yes, while §5 of the report says
+"Ransomware: No — financial fraud and data theft focused". The CSV wins per
+the rule above, the disagreement gets flagged, and this belongs in the README
+as an example of the system detecting a contradiction between two intel
+sources rather than silently averaging them. Assert this specific flag fires.
+
+OBJECTIVE EXTRACTION — this is the consequence signal the scorer has been
+missing, and it activates the dormant term wired in phase 6.
+
+Each campaign block states its goal in prose. Map to the enum with explicit
+keyword rules over the block text:
+  CrimsonJackal  -> ransomware_deployment
+  RedMantis      -> ip_theft          (source code theft, supply chain access)
+  SilentForge    -> credential_theft  (build secrets, keys, API credentials)
+  IronVeil       -> ransomware_deployment
+  WinterViper    -> payment_fraud
+Default to "unknown" rather than guessing. NEVER infer objective from the
+actor name — infer it from the block text, so the rule generalises to a
+campaign we have not seen.
 
 The "Threat Intelligence Analyst Notes" section is NOT parsed. It is the
 scoring rubric and is already encoded as weights in config.py. Add a comment
@@ -373,6 +422,13 @@ TESTS:
   is neither 0 nor 100 (both indicate a broken join)
 - a synthetic ID like CVE-SYN-2026-0011 yields kev_status "unknown"
 - offline mode falls back to cache without raising
+- all five campaigns map to a non-"unknown" objective, and the mapping is
+  driven by block text not actor name — mutate an actor name in a fixture and
+  assert the objective is unchanged
+- the WinterViper ransomware conflict flag fires on real data
+- the phase-6 objective term is now live: assert it contributes non-zero for
+  at least one finding, and run eval.py before and after to isolate what the
+  objective signal contributed to pairwise satisfaction
 - a cache dated 10 days old, with the network mocked as unreachable, sets
   kev_staleness_warning = true and the banner actually renders in the HTML
   output — check the rendered string, not just the flag

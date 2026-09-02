@@ -14,6 +14,11 @@
 ## Supporting question 3 — one thing to change
 
 <!-- semantic intel matching as a separate confirmed/possible channel; why precision for v1 -->
+<!-- TODO(phase-8): consider the STRONGER candidate surfaced in phase 3 — the scorer
+     models business impact per-service, not blast radius, so initial-access pivot
+     assets (vpn-edge / Remote Access, customer_facing No) are under-weighted even
+     though a VPN compromise is the pivot to everything else. Decide which of the two
+     is the supporting-Q3 answer once the golden set adjudicates the Fortinet ranking. -->
 
 ## Architecture
 
@@ -30,6 +35,10 @@
 ## Evaluation
 
 <!-- current eval numbers; one-annotator caveat on the golden set -->
+<!-- TODO(phase-8): blind-tier methodology sentence — "Pairs involving findings
+     already observed in scorer output are marked blind: false and reported separately,
+     since prior exposure to the ranking compromises independence." Report blind and
+     post-hoc pairwise rates separately; blind is the headline. -->
 
 ## Data freshness
 
