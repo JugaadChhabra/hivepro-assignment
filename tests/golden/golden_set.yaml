@@ -513,15 +513,23 @@ top_five:
       cve: CVE-2024-21762
       also_covers: CVE-2024-55591
       vulnerability_name: Fortinet SSL-VPN Heap Buffer Overflow RCE
-      affected_assets: [vpn-edge-01, vpn-edge-02]
-      vuln_ids: [V-2015, V-2016, V-2019, V-2020]
+      affected_assets: [vpn-edge-01, vpn-edge-02, vpn-staging]
+      vuln_ids: [V-2015, V-2016, V-2019, V-2020, V-2092]
       business_service: Remote Access
       grouping_note: >
         Two CVEs deliberately treated as one entry: pre-auth bypass
-        (CVE-2024-55591) chaining into RCE (CVE-2024-21762) on the same two
+        (CVE-2024-55591) chaining into RCE (CVE-2024-21762) on the same
         appliances, described by the MDR report as a single CrimsonJackal
         exploit chain and closed by a single FortiOS update. If the scorer
-        surfaces either CVE on either vpn-edge host, this entry is satisfied.
+        surfaces either CVE on any vpn host, this entry is satisfied.
+        CORRECTION (phase 5): the shortlist originally listed two assets; the
+        identical Fortinet finding also sits on vpn-staging (V-2092), and select.py
+        dedupes on (cve, vulnerability_name) so it collapses ACROSS environments.
+        Dedupe keeps the highest-scoring instance (vpn-edge, Production), so the
+        brief reports vpn-edge severity while listing staging among the assets —
+        the renderer notes "affects 3 assets across Production and Staging". Staging
+        is not a lower-stakes environment here (see P12: staging shares production
+        credentials).
       justification: >
         Both weaponised, CrimsonJackal is a ransomware actor confirmed
         operating in the region this week, and neither appliance has EDR.

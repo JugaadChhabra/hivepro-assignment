@@ -494,6 +494,15 @@ verify the public URL renders the brief and that /healthz, /api/risks,
 /api/findings, /traces all respond, and that /healthz returns real
 kev_fetched_at / nist_catalog_version values, not placeholders.
 
+LLM SMOKE TEST (do not skip — the brief looks fine even when the LLM does
+nothing): after deploy, GET /api/risks and assert at least one entry has
+explanation_source: "llm". If all five come back "template" on the Space, the
+Groq key or network is wrong and every explanation silently degraded to a
+scorer-reason template while the page still renders. /healthz already reports
+explanations_llm / explanations_template counts (phase 5) — check them there too,
+and note the split in the README so a reviewer sees the system working as
+designed rather than silently degraded.
+
 Add .github/workflows/keep-alive.yml: a scheduled job (every 12 hours) that
 GETs /healthz on the deployed Space and fails the workflow if
 kev_staleness_warning is true or the request errors. This keeps the free-tier
