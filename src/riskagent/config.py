@@ -56,10 +56,12 @@ RETRIEVAL_DISTANCE_THRESHOLD = 1.0
 REFERENCE_DATE = date(2026, 4, 24)
 
 # Regression gate (§7): eval.py fails CI if non-contested pairwise drops below this.
-# Current measured value (after blast radius). The two unsatisfied non-contested
-# pairs (P03 exposure-vs-internal-ransomware, P09 recovery_of_last_resort) are
-# documented consequence-gaps the current signals do not close — NOT overfit away.
-EVAL_PAIRWISE_FLOOR = 0.6
+# Current measured value: 0.800 (4/5 non-contested) after the phase-6b changes
+# (rto_hours, recovery-infrastructure weighting). The one remaining unsatisfied
+# non-contested pair, P03 (exposure vs internal-only active-ransomware), is a
+# documented gap: closing it needs an "internal-only discounts a live campaign"
+# signal that the phase-6b brief explicitly declined to add. NOT overfit away.
+EVAL_PAIRWISE_FLOOR = 0.8
 
 STALE_LAST_SEEN_DAYS = 30  # asset staleness: sets a flag, adds ZERO points (§4)
 RECENT_INTEL_DAYS = 30  # adversary recency window
@@ -74,8 +76,20 @@ FIT_SECTORS = frozenset(
 # compliance_scope is multi-valued; +4 if either token appears (approved reading).
 PCI_GDPR_TOKENS = frozenset({"PCI DSS", "GDPR"})
 
+# Recovery-of-last-resort services (phase 6b, constraints P04 + P09). blast_radius
+# models FORWARD cascade via transitive_dependents; Backup and Recovery has ZERO
+# dependents, so that signal scores it DOWN despite it being the fallback for every
+# other incident (lose it and recoverable ransomware becomes catastrophic).
+# DELIBERATE HARDCODE, made visible to the reviewer on purpose: the data carries no
+# field to derive this from — the environment enum has a "DR" value but NO asset row
+# uses it, and there is no is_recovery boolean. The only in-data evidence is the free
+# text of business_impact ("Disaster recovery capability lost; data restoration
+# impossible if primary fails"), which fuzzy text-matching would be less auditable
+# than this explicit set. One entry today; add here if the data grows a DR service.
+RECOVERY_SERVICES = frozenset({"Backup and Recovery"})
+
 # Group maxima (documented; the additive terms are designed to sum to these):
-# exposure 25, exploitability 22, adversary 25, business 20, control_gap 10.
+# exposure 25, exploitability 22, adversary 25, business 25, control_gap 10.
 WEIGHTS: dict[str, dict[str, float]] = {
     "exposure": {
         "internet_exposed": 18.0,
@@ -98,6 +112,14 @@ WEIGHTS: dict[str, dict[str, float]] = {
         "customer_facing": 4.0,
         "compliance_pci_gdpr": 4.0,
         "revenue_high_or_critical": 4.0,  # approved: High OR Critical (Critical >= High)
+        # rto_hours (phase 6b, constraint P11): the business stating in numbers how
+        # much downtime it tolerates — stronger, harder evidence than the revenue
+        # enum. Tiered, not linear: the gap between a 1h and a 12h RTO is the signal,
+        # not the raw hours. Kept ALONGSIDE revenue_impact (distinct axes: revenue is
+        # money-lost, rto is downtime-tolerated), so business group max is now 25.
+        "rto_le_1h": 5.0,
+        "rto_le_4h": 3.0,
+        "rto_le_12h": 1.0,  # > 12h contributes 0
         # asset-criticality points come from CRITICALITY_POINTS below.
     },
     "control_gap": {
@@ -111,6 +133,10 @@ WEIGHTS: dict[str, dict[str, float]] = {
     "blast_radius": {
         "dependents_high": 6.0,  # transitive_dependents >= 3
         "dependents_low": 3.0,  # transitive_dependents in 1..2
+        # recovery-of-last-resort (phase 6b, P04/P09): equals dependents_high by
+        # design — a recovery service is scored as top-tier fan-out regardless of its
+        # (zero) forward dependents. See RECOVERY_SERVICES above.
+        "recovery_infrastructure": 6.0,
         "objective_theft": 6.0,  # objective credential_theft / ip_theft (dormant → phase 7)
         "objective_fraud": 4.0,  # objective payment_fraud (dormant → phase 7)
     },

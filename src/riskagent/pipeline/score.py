@@ -103,7 +103,7 @@ def score(
             adversary += pts
             reasons.append(f"intel active within {config.RECENT_INTEL_DAYS}d (+{pts:g})")
 
-    # --- Business (max 20) ---
+    # --- Business (max 25) ---
     business = 0.0
     # total map: every criticality level is defined (Low -> 0), so an unmapped
     # value crashes loudly rather than silently scoring zero.
@@ -124,6 +124,19 @@ def score(
         pts = w["business"]["revenue_high_or_critical"]
         business += pts
         reasons.append(f"{service.revenue_impact.lower()} revenue impact (+{pts:g})")
+    # rto_hours (§4, constraint P11): tiered downtime tolerance stated by the business.
+    rto = service.rto_hours
+    if rto <= 1:
+        rto_pts = w["business"]["rto_le_1h"]
+    elif rto <= 4:
+        rto_pts = w["business"]["rto_le_4h"]
+    elif rto <= 12:
+        rto_pts = w["business"]["rto_le_12h"]
+    else:
+        rto_pts = 0.0
+    if rto_pts > 0:
+        business += rto_pts
+        reasons.append(f"RTO {rto}h (+{rto_pts:g})")
 
     # --- Control gap (max 10) ---
     control_gap = 0.0
@@ -143,7 +156,13 @@ def score(
     # --- Blast radius (max 12) — consequence/fan-out, NOT likelihood (§7) ---
     blast_radius = 0.0
     dependents = service.transitive_dependents
-    if dependents >= 3:
+    if service.business_service in config.RECOVERY_SERVICES:
+        # recovery-of-last-resort: zero forward dependents, but it is the fallback for
+        # every incident. Scored as top-tier fan-out regardless of dependents (P04/P09).
+        pts = w["blast_radius"]["recovery_infrastructure"]
+        blast_radius += pts
+        reasons.append(f"recovery-of-last-resort infrastructure (+{pts:g})")
+    elif dependents >= 3:
         pts = w["blast_radius"]["dependents_high"]
         blast_radius += pts
         reasons.append(f"{dependents} services depend on this (+{pts:g})")

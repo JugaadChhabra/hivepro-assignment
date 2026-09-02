@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from riskagent.config import REFERENCE_DATE, WEIGHTS
+from riskagent.config import RECOVERY_SERVICES, REFERENCE_DATE, WEIGHTS
 from riskagent.ingest.csv_loader import load_all
 from riskagent.models import Asset, BusinessService, EnrichedFinding, IntelRecord, Vulnerability
 from riskagent.pipeline.intel_match import match
@@ -182,6 +182,23 @@ def test_staleness_flags_but_adds_zero_points() -> None:
     assert not any("stale asset record" in r for r in fresh_score.reasons)
 
 
+def test_rto_hours_tiered_business_signal() -> None:
+    # P11 (phase 6b): tighter RTO is stronger business evidence. Isolate the term by
+    # holding every other business field at zero and sweeping only rto_hours.
+    def rto_only(hours: int) -> float:
+        svc = make_service(
+            customer_facing=False, compliance_scope="None", revenue_impact="Low", rto_hours=hours
+        )
+        return score(make_finding(service=svc)).business
+
+    assert rto_only(1) == WEIGHTS["business"]["rto_le_1h"]  # <= 1h -> +5
+    assert rto_only(4) == WEIGHTS["business"]["rto_le_4h"]  # 2..4h -> +3
+    assert rto_only(12) == WEIGHTS["business"]["rto_le_12h"]  # 5..12h -> +1
+    assert rto_only(24) == 0.0  # > 12h -> nothing
+    # strictly decreasing as tolerance loosens (tighter RTO = stronger signal)
+    assert rto_only(1) > rto_only(4) > rto_only(12) > rto_only(24)
+
+
 def test_blast_radius_scores_transitive_dependents() -> None:
     zero = make_finding(service=make_service())  # transitive_dependents defaults 0
     high = make_finding(service=make_service(transitive_dependents=5))
@@ -191,15 +208,35 @@ def test_blast_radius_scores_transitive_dependents() -> None:
     assert score(low).blast_radius == WEIGHTS["blast_radius"]["dependents_low"]  # 1..2 -> +3
 
 
+def test_recovery_service_scores_top_tier_fanout_despite_zero_dependents() -> None:
+    # P04/P09 (phase 6b): a recovery service with ZERO forward dependents must still
+    # score as high fan-out — the forward-cascade signal would otherwise zero it out.
+    recovery = make_finding(
+        service=make_service(business_service="Backup and Recovery", transitive_dependents=0)
+    )
+    non_recovery = make_finding(
+        service=make_service(business_service="Payment Processing", transitive_dependents=0)
+    )
+    assert recovery.service.business_service in RECOVERY_SERVICES
+    assert score(recovery).blast_radius == WEIGHTS["blast_radius"]["recovery_infrastructure"]
+    assert score(non_recovery).blast_radius == 0.0
+    # recovery reaches the same tier a 3+-dependent service would, from zero dependents
+    assert score(recovery).blast_radius == WEIGHTS["blast_radius"]["dependents_high"]
+    assert any("recovery-of-last-resort" in r for r in score(recovery).reasons)
+
+
 def test_campaign_objective_is_dormant_for_all_114() -> None:
     # the objective term depends on phase-7 report_parser; it must contribute 0 now
     b = load_all()
     findings = match(join(b.vulnerabilities, b.assets, b.services), b.intel).findings
     assert all(f.campaign_objective is None for f in findings)
-    # a finding's blast_radius equals its dependents-only contribution (no objective points)
+    # a finding's blast_radius equals dependents-or-recovery contribution (no objective points)
     for f in findings:
-        dependents = f.service.transitive_dependents
-        expected = 6.0 if dependents >= 3 else 3.0 if dependents >= 1 else 0.0
+        if f.service.business_service in RECOVERY_SERVICES:
+            expected = WEIGHTS["blast_radius"]["recovery_infrastructure"]
+        else:
+            dependents = f.service.transitive_dependents
+            expected = 6.0 if dependents >= 3 else 3.0 if dependents >= 1 else 0.0
         assert score(f).blast_radius == expected
 
 

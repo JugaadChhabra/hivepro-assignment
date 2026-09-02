@@ -265,14 +265,16 @@ Weights live in `config.py` as a dict so `eval.py` can sweep them.
 | | `exploit_maturity == "Weaponized"` | +5 (PoC +2) |
 | | region or sector fit | +2 |
 | | `active_last_seen` within 30 days | +2 |
-| **Business** (max 20) | `criticality` | Critical +8, High +5, Medium +2 |
+| **Business** (max 25) | `criticality` | Critical +8, High +5, Medium +2 |
 | | `customer_facing` | +4 |
 | | `compliance_scope` ∈ {PCI DSS, GDPR} | +4 |
-| | `revenue_impact == High` | +4 |
+| | `revenue_impact` ∈ {High, Critical} | +4 |
+| | `rto_hours` — *added in phase 6b (P11)* | ≤1h +5, ≤4h +3, ≤12h +1, >12h +0 |
 | **Control gap** (max 10) | `no_edr` | +5 |
 | | `no_vendor_patch` | +3 |
 | | `days_open > 30` | +2 |
 | **Blast radius** (max 12) — *added in phase 6, see below* | `transitive_dependents >= 3` | +6 (1–2 → +3, 0 → 0) |
+| | recovery-of-last-resort service — *added in phase 6b (P04/P09)* | +6 (top-tier fan-out regardless of dependents) |
 | | campaign `objective` ∈ {credential_theft, ip_theft} | +6 |
 | | campaign `objective` == payment_fraud | +4 |
 
@@ -281,7 +283,7 @@ Additive, so every contribution stays inspectable and the total is reconstructab
 Three design points to defend:
 
 1. **Ordering matches the report's rubric.** Exposure and exploitability outweigh raw CVSS by design. A CVSS 9.8 on an internal dev box scores ~15; a CVSS 8.1 on an internet-facing PCI-scoped payment gateway with a live ransomware campaign scores ~75. That is the assignment's worked example, satisfied by construction.
-2. **Staleness dampens, it does not amplify.** `last_seen_days > 30` adds nothing to the score. It sets a flag that surfaces in the output. A finding on a machine that may be decommissioned should not climb the list.
+2. **Staleness dampens, it does not amplify.** `last_seen_days > 30` adds nothing to the score. It sets a flag that surfaces in the output. A finding on a machine that may be decommissioned should not climb the list. *(Phase 6b: golden pair P10 deliberately challenged this rule, asserting that unseen-plus-unowned IS the risk. The conflict was resolved in this rule's favour on measured grounds — making staleness additive produced zero headline-pairwise change and could not satisfy P10 without inventing graded-days + no-owner signals — and P10 was retired to the golden set's `excluded` section with the full rationale. This rule stands unchanged.)*
 3. **These weights are v0.** They come from the report's stated ordering, not from tuning toward a desired answer. Phase 6 tunes them against the golden set, and the README says so.
 4. **Blast radius is deliberately its own group, added in phase 6.** The first five groups model *likelihood* — how reachable, how exploitable, who is attacking, how important the asset. They barely model *consequence*: what an attacker reaches once inside. Two findings on equally critical assets score identically whether the campaign encrypts one server or harvests credentials for lateral movement across the estate, and whether the affected service is a leaf or the dependency five others sit on.
 

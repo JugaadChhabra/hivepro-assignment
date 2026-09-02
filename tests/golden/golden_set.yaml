@@ -338,43 +338,10 @@ pairwise:
     confidence: high
     contested: false
 
-  # ---- P10 ---------------------------------------------------------------
-  # CONFLICTS WITH THE PLAN'S STALENESS RULE — deliberately. §4 currently
-  # specifies that last_seen_days > 30 adds ZERO points and sets a flag only,
-  # on the reasoning that a possibly-decommissioned host should not climb the
-  # ranking. This constraint asserts the opposite: inability to see an asset
-  # IS the risk, especially when compounded with no owner. Phase 6 must
-  # resolve this explicitly rather than let one silently override the other.
-  - id: P10
-    source: annotator
-    blind: true
-    higher:
-      vuln_id: V-2109
-      cve: CVE-SYN-2024-0050
-      asset_id: A-1059
-      asset_name: legacy-reporting-server
-      note: "IIS 8.5 Multiple Vulnerabilities · CVSS 8.3 · internal only · Production · Financial Reporting, SOC 2 + IFRS · no exploit · 280 days open · LAST SEEN 62 DAYS AGO · no EDR · also the orphaned asset from P08"
-    lower:
-      vuln_id: V-2090
-      cve: CVE-SYN-2024-0002
-      asset_id: A-1034
-      asset_name: legacy-payments-db
-      note: "PostgreSQL 11 End of Life · CVSS 8.0 · internal only · Production · Financial Reporting, SOC 2 + IFRS · no exploit · 280 days open · last seen 45 days ago · no EDR"
-    reason: >
-      Near-identical findings; the discriminator is inventory visibility. Y
-      has not been seen for 62 days against X's 45, and it is the same host
-      flagged in P08 as having no assigned owner. Unseen plus unowned plus
-      regulated financial data is a compounding failure: nobody knows whether
-      the machine is decommissioned or whether the monitoring reporting on it
-      has broken, and nobody is positioned to find out.
-    factors: [last_seen_days, no_owner, compliance_scope, compounding_neglect]
-    confidence: medium
-    contested: true
-    counterargument: >
-      Staleness may indicate the host is already decommissioned, in which case
-      ranking it up wastes remediation effort on a machine that no longer
-      exists — which is precisely why §4 specifies staleness dampens rather
-      than amplifies. Y also has marginally lower CVSS.
+  # P10 RESOLVED IN PHASE 6b — moved to `excluded` below. It asserted the
+  # opposite of §4's staleness rule; the conflict was decided in §4's favour on
+  # measured grounds (staleness additive buys zero headline pairwise and cannot
+  # satisfy P10 without inventing signals). See the P10 entry under `excluded`.
 
   # ---- P11 ---------------------------------------------------------------
   # Introduces rto_hours as a factor. NOTE: rto_hours is currently UNUSED by
@@ -925,6 +892,36 @@ retrieval:
 # ---------------------------------------------------------------------------
 
 excluded:
+  - proposed:
+      higher_vuln_id: V-2109      # legacy-reporting-server, 62d unseen, no owner
+      lower_vuln_id: V-2090       # legacy-payments-db, 45d unseen, owned
+    dropped_because: >
+      Was P10. Deliberately encoded to CONTRADICT §4's staleness rule
+      (last_seen_days > 30 sets a flag and adds ZERO points, so a
+      possibly-decommissioned host does not climb the ranking). Phase 6b
+      resolved the conflict in §4's favour and retired this pair, on three
+      measured/analysed grounds:
+        1. Making staleness additive produces ZERO headline pairwise change.
+           The only stale asset in any non-contested pair is P09's HIGHER,
+           already-passing side, so an additive term cannot break — only
+           strengthen — the headline, and it flips nothing.
+        2. A flat staleness term does not even satisfy P10: both findings are
+           stale (62d and 45d), so both receive the same points and the margin
+           is unchanged (+0.2 before and after). Satisfying P10 on its stated
+           reasoning (62d-unowned outranks 45d-owned) would require graded-by-
+           days staleness PLUS a no-owner compounding term — new signals added
+           solely to move one contested pair, which the phase-6b brief forbids.
+        3. §4's reasoning is sound and this pair's own counterargument concedes
+           it: staleness may mean the host is decommissioned, and inflating a
+           dead box's rank wastes remediation effort against live, exposed,
+           exploitable findings. Staleness is an inventory-reconciliation signal
+           (surfaced as a flag, still visible in the report) rather than an
+           exploitability one, and belongs out of the numeric rank.
+      Note that P10 only ever "passed" incidentally, on a 0.3 CVSS delta (IIS
+      8.3 vs PostgreSQL 8.0), never on the visibility argument it was built on —
+      so it did not validate its own thesis. §4 stands unchanged; the no-owner
+      compounding intuition is recorded here as a candidate signal, not built.
+
   - proposed:
       higher_vuln_id: V-2111
       lower_vuln_id: V-2108
