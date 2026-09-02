@@ -225,3 +225,6 @@ cache/
 
 # Generated eval dump
 scored_findings.csv
+
+# local Claude Code tooling
+.claude/
