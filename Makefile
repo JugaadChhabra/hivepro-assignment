@@ -17,7 +17,7 @@ test-all:
 	pytest
 
 run:
-	@echo "make run: not implemented until phase 5 (app.py)" && exit 1
+	uvicorn riskagent.app:app --host 0.0.0.0 --port 7860
 
 eval:
 	@echo "make eval: not implemented until phase 6 (eval.py)" && exit 1

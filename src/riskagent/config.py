@@ -30,6 +30,16 @@ NIST_CATALOG_URL = (
 # revision it corresponds to. Phase 7 tightens the live staleness handling.
 NIST_CATALOG_VERSION = "SP 800-53 Rev 5"
 
+# --- LLM (§6) — writes the explanation sentence only, never a rank/score/control ---
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_TEMPERATURE = 0.0
+GROQ_TIMEOUT_S = 20.0  # per-call; an unreachable endpoint must RAISE, not hang
+LLM_STAGE_DEADLINE_S = 30.0  # outer bound on the whole 5-call stage; stragglers -> template
+# An enhancement is only shown if it matched at least this well; a weak match
+# surfaces NO enhancement rather than the least-bad of a dozen (SC-7 flooding).
+ENHANCEMENT_MAX_DISTANCE = 0.75
+MAX_ENHANCEMENTS_SHOWN = 2
+
 # --- RAG (§5) ---
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # local, CPU, 384-dim, no API key
 RETRIEVAL_TOP_K = 3

@@ -12,6 +12,10 @@ dependencies = [
     "pydantic>=2.7",  # typed data contracts — the spine of the pipeline (§2)
     "chromadb>=0.5",  # persistent local vector store for NIST controls only (§5)
     "sentence-transformers>=3.0",  # local CPU embeddings, all-MiniLM-L6-v2, no API key (§5)
+    "fastapi>=0.110",  # the read-only service (§6)
+    "uvicorn>=0.29",  # ASGI server for `make run` (§6)
+    "jinja2>=3.1",  # deterministic HTML/Markdown rendering, no model calls (§6)
+    "groq>=0.11",  # LLM provider for the explanation sentence only (§6)
 ]
 
 [project.optional-dependencies]
@@ -19,6 +23,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "pytest>=8.0",
+    "httpx>=0.27",  # FastAPI TestClient transport
 ]
 
 [tool.setuptools.packages.find]

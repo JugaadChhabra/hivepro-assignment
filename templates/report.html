@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TawasolPay Cyber Risk Brief</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; max-width: 820px;
+           margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+    .risk { border: 1px solid #8884; border-radius: 8px; padding: .75rem 1rem; margin: 1rem 0; }
+    .risk h2 { font-size: 1.1rem; margin: 0 0 .5rem; }
+    .risk p { margin: .3rem 0; }
+    .label { font-weight: 600; }
+    .threat.none { opacity: .7; }
+    .tag { font-size: .75rem; border: 1px solid #c80; color: #c80; border-radius: 4px;
+           padding: 0 .3rem; margin-left: .3rem; }
+    .banner { background: #fdd; color: #900; border: 1px solid #c00; border-radius: 6px;
+              padding: .5rem .75rem; margin: .5rem 0; font-weight: 600; }
+    footer { margin-top: 2rem; font-size: .8rem; opacity: .7; border-top: 1px solid #8884;
+             padding-top: .5rem; }
+  </style>
+</head>
+<body>
+  <h1>TawasolPay — Top 5 Cyber Risks</h1>
+  <p>Ranked deterministically over all findings; the sentence explaining each rank is grounded LLM prose.</p>
+  {% if brief.provenance.kev_staleness_warning %}
+  <div class="banner">&#9888; KEV feed is more than 7 days stale &mdash; actively-exploited status may be out of date.</div>
+  {% endif %}
+
+  {% for e in brief.entries %}
+  <article class="risk">
+    <h2>#{{ e.rank }} &mdash; {{ e.vulnerability_name }}</h2>
+    <p><span class="label">Assets:</span> {{ e.affected_assets | join(', ') }}
+       &middot; <span class="label">Service:</span> {{ e.service_name }}
+       ({{ e.service_owner }}, RTO {{ e.rto_hours }}h)</p>
+    {% if e.multi_env_note %}
+    <p class="note"><em>{{ e.multi_env_note }}.</em></p>
+    {% endif %}
+    <p><span class="label">Evidence:</span> {{ e.cve }} &middot; CVSS {{ '%g' | format(e.cvss) }}
+       &middot; {{ 'internet-facing' if e.internet_exposed else 'internal' }}
+       &middot; {{ 'exploit available' if e.exploit_available else 'no public exploit' }}
+       &middot; {{ 'no auth required' if not e.auth_required else 'auth required' }}
+       &middot; {{ e.days_open }} days open
+       &middot; EDR {{ 'absent' if not e.edr_installed else 'present' }}</p>
+    <p class="threat{{ '' if e.intel else ' none' }}"><span class="label">Threat:</span>
+       {{ e.threat_summary }}</p>
+    <p><span class="label">Control:</span> {{ e.control_id }} {{ e.control_title }}{% if e.enhancements %},
+       particularly {{ e.enhancements | map(attribute='control_id') | join(', ') }}{% endif %}
+       &mdash; {{ e.control_summary }}</p>
+    <p><span class="label">Why this ranks #{{ e.rank }}:</span> {{ e.why_ranked }}
+       {% if e.explanation_source == 'template' %}<span class="tag">template</span>{% endif %}</p>
+    {% if e.data_flags %}
+    <p><span class="label">Flags:</span> {{ e.data_flags | join(', ') }}</p>
+    {% endif %}
+  </article>
+  {% endfor %}
+
+  <footer>
+    NIST catalog {{ brief.provenance.nist_catalog_version }}
+    &middot; index built {{ brief.provenance.index_built_at }}
+    &middot; NIST fetched {{ brief.provenance.nist_fetched_at }}
+    {% if brief.provenance.kev_fetched_at %}&middot; KEV fetched {{ brief.provenance.kev_fetched_at }}{% endif %}
+    &middot; generated {{ brief.provenance.generated_at }}
+  </footer>
+</body>
+</html>
