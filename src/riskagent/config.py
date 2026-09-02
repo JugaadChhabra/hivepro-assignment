@@ -13,6 +13,32 @@ so it is encoded here rather than parsed (phase 7 adds the exact line citation).
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
+
+# --- paths / cache (all gitignored; rebuilt on demand) ---
+CACHE_DIR = Path(__file__).resolve().parents[2] / "cache"
+NIST_CACHE_PATH = CACHE_DIR / "nist_sp800-53r5.json"
+CHROMA_DIR = CACHE_DIR / "chroma"
+CHROMA_COLLECTION = "nist_800_53"
+
+# --- NIST SP 800-53 catalog (§3, §5) ---
+NIST_CATALOG_URL = (
+    "https://csrc.nist.gov/CSRC/media/Projects/risk-management/"
+    "800-53%20Downloads/800-53r5/NIST_SP-800-53_rev5_catalog_load.csv"
+)
+# The catalog_load CSV does not carry a version field; this is the published
+# revision it corresponds to. Phase 7 tightens the live staleness handling.
+NIST_CATALOG_VERSION = "SP 800-53 Rev 5"
+
+# --- RAG (§5) ---
+EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # local, CPU, 384-dim, no API key
+RETRIEVAL_TOP_K = 3
+# Over-fetch before collapsing enhancements (e.g. SI-2(5)) to their base control
+# (SI-2), so the top-k are k DISTINCT base controls, not one control's enhancements.
+RETRIEVAL_OVERFETCH = 40
+# Cosine distance (Chroma space) above which the family pre-filter is abandoned and
+# the query retried unfiltered. Provisional — retrieval quality is measured in phase 6.
+RETRIEVAL_DISTANCE_THRESHOLD = 1.0
 
 # Reference "now" for recency scoring. Pinned to the freshest active_last_seen in
 # the intel feed (2026-04-24) so score() is deterministic and reproducible — never

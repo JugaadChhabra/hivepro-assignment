@@ -10,6 +10,8 @@ requires-python = ">=3.11"
 # Runtime dependencies are added phase-by-phase, each with a one-line justification.
 dependencies = [
     "pydantic>=2.7",  # typed data contracts — the spine of the pipeline (§2)
+    "chromadb>=0.5",  # persistent local vector store for NIST controls only (§5)
+    "sentence-transformers>=3.0",  # local CPU embeddings, all-MiniLM-L6-v2, no API key (§5)
 ]
 
 [project.optional-dependencies]
@@ -35,14 +37,30 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "RUF"]
 "tests/**" = []
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"  # numpy (via sentence-transformers) ships 3.12-syntax stubs
 strict = true
 files = ["src", "tests"]
-mypy_path = "src"
+mypy_path = "src:tests"
 explicit_package_bases = true
 namespace_packages = true
 plugins = ["pydantic.mypy"]
 
+# sentence-transformers ships no type information.
+[[tool.mypy.overrides]]
+module = ["sentence_transformers.*"]
+ignore_missing_imports = true
+
+# chromadb ships strict inline types whose over-narrow arg types (ndarray-only
+# embeddings, invariant metadata mappings) fight plain-Python inputs; treat its
+# boundary as untyped rather than casting at every call site.
+[[tool.mypy.overrides]]
+module = ["chromadb.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
+markers = [
+    "network: needs network + model download (real NIST catalog / embeddings); run as a separate CI job",
+]

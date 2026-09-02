@@ -1,4 +1,4 @@
-.PHONY: install lint test run eval
+.PHONY: install lint test test-integration test-all run eval
 
 install:
 	pip install -e ".[dev]"
@@ -7,7 +7,13 @@ lint:
 	ruff check .
 	mypy
 
-test:
+test:  # fast gate — no network, no model download
+	pytest -m "not network"
+
+test-integration:  # real NIST catalog + embeddings (needs network)
+	pytest -m network
+
+test-all:
 	pytest
 
 run:

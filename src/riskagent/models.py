@@ -104,6 +104,20 @@ class RemediationGuidance(BaseModel):
     validation_evidence: str
 
 
+class ControlRecord(BaseModel):
+    """One NIST SP 800-53 control or control enhancement (§5). This is the ONLY
+    kind of record that is ever embedded into the vector store."""
+
+    model_config = _MODEL_CONFIG
+
+    control_id: str  # e.g. "SI-2" or "AC-2(1)"
+    family: str  # the alpha prefix, e.g. "SI"
+    title: str
+    statement: str  # the control text — this is what gets embedded
+    discussion: str  # long, generic; stored as metadata, NOT embedded
+    related_controls: list[str]
+
+
 class KevEntry(BaseModel):
     """A CISA KEV catalog record. Fetched and joined in phase 7; defined here so
     ``EnrichedFinding`` is fully typed from the start."""
