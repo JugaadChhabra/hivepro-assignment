@@ -168,7 +168,13 @@ class Campaign(BaseModel):
     ransomware: bool
     confidence: str
     iocs: str
+    objective: Literal[
+        "ransomware_deployment", "credential_theft", "ip_theft",
+        "payment_fraud", "espionage", "unknown",
+    ]
 ```
+
+**`objective` is the consequence signal, and it is the reason this parser earns its place.** Each campaign block states its goal in prose: RedMantis pursues source-code theft and supply-chain access, SilentForge harvests credentials and IP, WinterViper commits payment fraud, CrimsonJackal and IronVeil deploy ransomware. Without this field the scorer models *likelihood* (is someone attacking this?) but not *consequence* (what do they do once in?), and a finding whose campaign harvests credentials for lateral movement scores identically to one that causes a contained outage. Map the prose to the enum with explicit keyword rules over the campaign block, and default to `unknown` rather than guessing — never infer an objective from the actor name alone.
 
 The "Threat Intelligence Analyst Notes" section is not data — it is the scoring rubric. Its five ranked factors become the weight groups in `config.py`. Encode it as a constant with a comment pointing back at the source line; do not parse it.
 
@@ -195,6 +201,22 @@ def join(assets, vulns, services) -> list[JoinedFinding]
 Both joins are total in this dataset — verified, zero orphans on either side — so assert it. An orphan means a data problem, and silently dropping it would remove a finding from the ranking without anyone noticing.
 
 Also reconcile the two exposure columns. `vulnerabilities.asset_exposure` and `assets.internet_exposed` both encode exposure. Where they disagree, append `"exposure_source_conflict"` to `data_flags` and take the asset inventory as authoritative. Do not silently pick one.
+
+**Compute the service dependency graph here.** `business_services.csv` has a `depends_on` column that is otherwise unused, and it is the only structured blast-radius signal in the pack. Parse it into edges, then compute the **transitive dependent count** per service — how many other services fail, directly or indirectly, if this one does.
+
+```
+Payment Processing      depends_on: Customer Login, Fraud Detection
+Partner API Gateway     depends_on: Payment Processing
+CRM Platform            depends_on: Customer Login
+Customer Support Portal depends_on: Customer Login
+Customer Login          depends_on: Identity Verification
+DevOps Platform         depends_on: Software Delivery
+Compliance Reporting    depends_on: Financial Reporting
+```
+
+Resolved transitively: Identity Verification carries 5 dependent services, Customer Login 4, Payment Processing 1, Software Delivery 1, Testing Platform 0. Identity Verification looks unremarkable on its own row and is in fact the most load-bearing service in the estate — exactly the kind of thing per-service scoring misses.
+
+Split on comma, strip whitespace, treat empty as no dependencies. **Traverse with a visited set**: the data is acyclic today but a cycle would hang the pipeline, and that must not be a runtime discovery. Store the result as `transitive_dependents: int` on the service record.
 
 ### `intel_match.py`
 ```python
@@ -250,6 +272,9 @@ Weights live in `config.py` as a dict so `eval.py` can sweep them.
 | **Control gap** (max 10) | `no_edr` | +5 |
 | | `no_vendor_patch` | +3 |
 | | `days_open > 30` | +2 |
+| **Blast radius** (max 12) — *added in phase 6, see below* | `transitive_dependents >= 3` | +6 (1–2 → +3, 0 → 0) |
+| | campaign `objective` ∈ {credential_theft, ip_theft} | +6 |
+| | campaign `objective` == payment_fraud | +4 |
 
 Additive, so every contribution stays inspectable and the total is reconstructable by hand.
 
@@ -258,6 +283,13 @@ Three design points to defend:
 1. **Ordering matches the report's rubric.** Exposure and exploitability outweigh raw CVSS by design. A CVSS 9.8 on an internal dev box scores ~15; a CVSS 8.1 on an internet-facing PCI-scoped payment gateway with a live ransomware campaign scores ~75. That is the assignment's worked example, satisfied by construction.
 2. **Staleness dampens, it does not amplify.** `last_seen_days > 30` adds nothing to the score. It sets a flag that surfaces in the output. A finding on a machine that may be decommissioned should not climb the list.
 3. **These weights are v0.** They come from the report's stated ordering, not from tuning toward a desired answer. Phase 6 tunes them against the golden set, and the README says so.
+4. **Blast radius is deliberately its own group, added in phase 6.** The first five groups model *likelihood* — how reachable, how exploitable, who is attacking, how important the asset. They barely model *consequence*: what an attacker reaches once inside. Two findings on equally critical assets score identically whether the campaign encrypts one server or harvests credentials for lateral movement across the estate, and whether the affected service is a leaf or the dependency five others sit on.
+
+   This gap was **discovered through evaluation, not assumed up front** — hand-ranking surfaced pairs the scorer got wrong for a consistent reason, and the two signals here are the fix. That provenance matters and belongs in the README: it is the difference between an evaluation harness that confirms what you already believed and one that found something.
+
+   Keeping it as a separate group rather than folding into Business preserves the existing group maxima, so the phase 6 tuning table can show the before/after cleanly.
+
+   **Sequencing note:** the two signals land in different phases. `transitive_dependents` comes from `business_services.csv`, already loaded, so it lands in **phase 6** with the rest of the tuning work. `objective` depends on `report_parser.py`, which is **phase 7** — so its term is wired but dormant (scoring 0) until then, the same pattern as the KEV term. Re-run `eval.py` before and after phase 7 to isolate what the objective signal actually contributed.
 
 ---
 
@@ -407,8 +439,8 @@ README caveat, stated plainly: one annotator, so this is calibrated judgement ra
 | **3** | `score.py` + `test_score.py` with the 4 hand-built cases | 2 | Internal-CVSS-10 ranks below exposed-CVSS-8 |
 | **4** | `nist.py`, `index.py`, `retrieve.py` | 2.5 | Query for a Fortinet finding returns SI-2 in top 3 |
 | **5** | `select.py`, `llm.py`, `guard.py`, `render.py`, `app.py` | 2.5 | Local server renders a readable top-5 |
-| **6** | Golden set + `eval.py`, tune weights | 2 | Metrics printed, weights justified by measurement |
-| **7** | `report_parser.py`, `kev.py`, `trace.py` | 1.5 | Campaign cross-check runs, KEV coverage logged |
+| **6** | Golden set + `eval.py`, blast-radius signals, tune weights | 2.5 | Metrics printed, weights justified by measurement |
+| **7** | `report_parser.py` (incl. `objective`), `kev.py`, `trace.py` | 1.5 | Campaign cross-check runs, KEV coverage logged |
 | **8** | Dockerfile, deploy to HF Spaces, keep-alive, README | 1.5 | Public URL live, three README answers written |
 
 **Phases 1–5 produce a working system.** If time collapses, stop after 5 and write the README honestly. Phases 6–8 are what separate this from a working notebook — do not skip 6.

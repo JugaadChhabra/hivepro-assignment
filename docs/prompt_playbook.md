@@ -12,7 +12,7 @@ Companion to `implementation_plan.md`. One session per phase, one reviewer pass 
 4. When the phase reports done, run the **Reviewer** on it. Do not skip this even when the code looks fine — the reviewer's job is to catch the failure modes you're too close to see.
 5. Commit only after a `PASS` verdict. One commit per phase, message `phase-N: <what>`.
 
-Keep `implementation_plan.md` in the working directory so it can be referenced by path rather than re-pasted.
+The spec lives at `docs/implementation_plan.md` (single copy — no root duplicate). Reference it by that path rather than re-pasting.
 
 ---
 
@@ -20,7 +20,7 @@ Keep `implementation_plan.md` in the working directory so it can be referenced b
 
 ```
 PROJECT: TawasolPay Cyber Risk Assistant — take-home for an AI Associate role
-at a cybersecurity company. The full spec is in ./implementation_plan.md — read
+at a cybersecurity company. The full spec is in docs/implementation_plan.md — read
 it before writing code.
 
 WHAT I AM BEING GRADED ON, in priority order:
@@ -268,6 +268,18 @@ appended; on second failure fall back to a template sentence built from
 score.reasons and tag explanation_source: "template".
 
 render.py: Jinja, deterministic, no model calls. Use the entry format in §6.
+Two additions carried forward from phase 4:
+- SURFACE THE ENHANCEMENT ID. Retrieval collapses enhancements to their base
+  control for the citation but carries the matched enhancement IDs+text on the
+  result (RetrievalResult.chunks[i].enhancement_ids / .enhancements). Where an
+  enhancement matched, render "CP-9 System Backup, particularly CP-9(1)" — the
+  base is the citation, but the enhancement is often where the actionable
+  sentence lives (backup immutability is in CP-9(1), not CP-9's base text).
+- SHOW EXPLOIT PREREQUISITES. The evidence line MUST print auth_required and
+  exploit_available explicitly. This came out of an excluded golden pair whose
+  reasoning inverted because auth_required wasn't visible — a human reading the
+  brief who can't tell whether an exploit needs credentials will mis-sequence
+  remediation the same way. e.g. "exploit available · no auth required".
 
 app.py: the five routes. Pipeline runs once at startup and caches.
 
@@ -279,6 +291,8 @@ TESTS (tests/test_select.py, tests/test_guard.py):
 - guard rejects a threat actor name when intel is empty
 - guard's template fallback produces a non-empty sentence from reasons[]
 - /api/findings returns all 114, proving nothing was truncated before scoring
+- render shows auth_required and exploit_available on the evidence line, and the
+  matched enhancement ID where one was retrieved
 
 Mock the LLM in tests. No network calls in the test suite.
 ```
@@ -304,6 +318,26 @@ eval.py — prints three numbers:
 - pairwise satisfaction rate (primary)
 - precision@5 against the golden top-5
 - retrieval recall@3 against ~20 hand-labelled risk→control pairs
+
+3. RETRIEVAL UNDER-SERVES UNMONITORED HOSTS (found in phase 4, fix here — NOT a
+   phase-4 reopen). Single-label classification silently drops a remediation
+   dimension: 10 findings have an EDR gap but classify as unpatched_software
+   (correct — a patch exists, so patching is primary). The consequence is that a
+   finding on an unmonitored host retrieves SI-2 and never surfaces SI-3, so the
+   brief says "patch" and never mentions nothing would have noticed an intrusion.
+   Scoring is unaffected (phase-2 control_gaps tracks no_edr independently and
+   feeds the scorer); it is retrieval, and therefore the output, that under-serves.
+   Fix: union the family filter across the primary finding_type AND the control
+   gaps, using phase-2 work that currently only feeds the scorer:
+
+       families = set(FAMILY_HINTS[finding_type])
+       for gap in finding.control_gaps:
+           families |= set(GAP_FAMILY_HINTS.get(gap, ()))   # e.g. no_edr -> ["SI","AU"]
+
+   So unpatched_software + no_edr searches SI, RA, AU and SI-3 becomes reachable
+   in the top 3 alongside SI-2. Verify BOTH: (a) a finding with both signals
+   returns SI-2 AND SI-3 in the top 3, and (b) widening does not degrade the clean
+   cases — re-run recall@3 on R01–R22 before and after and report both numbers.
 
 Wire eval.py into CI as a regression gate.
 
@@ -499,7 +533,7 @@ description: Adversarial code reviewer for the TawasolPay risk assistant. Invoke
 tools: Read, Grep, Glob, Bash
 ---
 
-You review a phase of work against ./implementation_plan.md. You did not write
+You review a phase of work against docs/implementation_plan.md. You did not write
 this code and you have no stake in it passing.
 
 Your job is to find what is wrong. A review that finds nothing is a review that
@@ -581,7 +615,7 @@ RULES:
 **Invoking it:**
 
 ```
-Use the reviewer subagent to review phase N. Give it ./implementation_plan.md,
+Use the reviewer subagent to review phase N. Give it docs/implementation_plan.md,
 the Standing Context invariants, and the diff for this phase only.
 ```
 
