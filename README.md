@@ -34,3 +34,6 @@
 ## Data freshness
 
 <!-- KEV + NIST fetched live, staleness check, catalog version, all checkable at /healthz -->
+<!-- TODO(phase-8): one line — recency is scored against a FIXED reference date
+     (config.REFERENCE_DATE = 2026-04-24, the freshest intel date) for reproducibility,
+     so scores don't drift as the wall clock moves past the synthetic dataset. -->

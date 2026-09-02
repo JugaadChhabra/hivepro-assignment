@@ -334,6 +334,14 @@ CROSS-CHECK against threat_intelligence.csv — both sources claim CrimsonJackal
 exploits CVE-2024-21762. Assert agreement; on mismatch append to data_flags and
 prefer the CSV. Do not merge.
 
+KNOWN CONFLICT (found in phase 3, verify + flag here — do not let it surprise you):
+threat_intelligence.csv TI-3023 (WinterViper) has ransomware_association = Yes, but
+synthetic_threat_report.md §5 says WinterViper "Ransomware: No — financial fraud
+and data theft focused". The cross-check MUST catch this: flag it, prefer the CSV
+(so phase-3 scores stay unchanged), do not merge. README should cite it as a
+detected source contradiction — exactly the "flag uncertainty instead of guessing"
+behaviour the JD asks for.
+
 The "Threat Intelligence Analyst Notes" section is NOT parsed. It is the
 scoring rubric and is already encoded as weights in config.py. Add a comment
 in config.py citing the source line.
