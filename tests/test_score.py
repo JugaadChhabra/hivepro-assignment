@@ -172,6 +172,24 @@ def test_reasons_non_empty_for_all_114_real_findings() -> None:
         assert breakdown.reasons, f"empty reasons for {f.vulnerability.vuln_id}"
 
 
+def test_exposure_model_mismatch_scores_as_reachable_without_mutating_flag() -> None:
+    # phase 7: a public-object-storage finding on an internal-only asset scores the
+    # exposure term as if internet-reachable, via the data_flag — internet_exposed stays False.
+    asset = make_asset(internet_exposed=False)
+    base = make_finding(asset=asset)  # no flag
+    flagged = EnrichedFinding(
+        vulnerability=make_vuln(),
+        asset=asset,
+        service=make_service(),
+        intel=[],
+        data_flags=["exposure_model_mismatch"],
+    )
+    delta = score(flagged).exposure - score(base).exposure
+    assert delta == WEIGHTS["exposure"]["internet_exposed"]  # +18, same as a real exposed asset
+    assert flagged.asset.internet_exposed is False  # flag scored, bit untouched
+    assert any("internet-reachable despite" in r for r in score(flagged).reasons)
+
+
 def test_staleness_flags_but_adds_zero_points() -> None:
     fresh = make_finding(asset=make_asset(last_seen_days=5))
     stale = make_finding(asset=make_asset(last_seen_days=90))
@@ -225,19 +243,37 @@ def test_recovery_service_scores_top_tier_fanout_despite_zero_dependents() -> No
     assert any("recovery-of-last-resort" in r for r in score(recovery).reasons)
 
 
-def test_campaign_objective_is_dormant_for_all_114() -> None:
-    # the objective term depends on phase-7 report_parser; it must contribute 0 now
+def test_campaign_objective_dormant_in_raw_pipeline_live_after_apply() -> None:
+    # CONTRACT: join+intel_match do NOT set objectives — the raw pipeline stays dormant.
+    # Phase 7's apply_campaigns (run inside score_all_findings) is what activates the term.
     b = load_all()
-    findings = match(join(b.vulnerabilities, b.assets, b.services), b.intel).findings
-    assert all(f.campaign_objective is None for f in findings)
-    # a finding's blast_radius equals dependents-or-recovery contribution (no objective points)
-    for f in findings:
+    raw = match(join(b.vulnerabilities, b.assets, b.services), b.intel).findings
+    assert all(f.campaign_objective is None for f in raw)
+    # raw blast_radius is dependents-or-recovery only (no objective points yet)
+    for f in raw:
         if f.service.business_service in RECOVERY_SERVICES:
             expected = WEIGHTS["blast_radius"]["recovery_infrastructure"]
         else:
             dependents = f.service.transitive_dependents
             expected = 6.0 if dependents >= 3 else 3.0 if dependents >= 1 else 0.0
         assert score(f).blast_radius == expected
+
+
+def test_objective_term_is_live_after_phase7_wiring() -> None:
+    # phase 7: the dormant term is now active in the real pipeline, and it contributes
+    # non-zero blast_radius to at least one finding (the point of parsing the report).
+    from riskagent.generate.assemble import score_all_findings
+
+    findings = score_all_findings(load_all())
+    with_obj = [f for f in findings if f.campaign_objective is not None]
+    assert with_obj, "no finding received a campaign objective"
+    # ip_theft / credential_theft / payment_fraud carry points; ransomware_deployment 0
+    scored = [
+        f for f in with_obj
+        if f.campaign_objective in {"ip_theft", "credential_theft", "payment_fraud"}
+    ]
+    assert scored
+    assert any((f.score.blast_radius if f.score else 0) > 0 for f in scored)
 
 
 def test_every_scored_enum_value_is_mapped() -> None:

@@ -15,7 +15,19 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from riskagent import config
 from riskagent.models import Asset, BusinessService, EnrichedFinding, Vulnerability
+
+
+def _is_public_object_storage(vuln: Vulnerability) -> bool:
+    """True iff the finding is cloud object storage with a public/overly-permissive
+    access policy (exposure_model_mismatch predicate, §4 / phase 7). Narrow: needs a
+    storage-object token AND a public-policy token over name + affected_component.
+    Exact substring membership, no fuzzy matching — same discipline as intel matching."""
+    text = f"{vuln.vulnerability_name} {vuln.affected_component}".lower()
+    has_storage = any(tok in text for tok in config.OBJECT_STORAGE_TOKENS)
+    has_public = any(tok in text for tok in config.PUBLIC_POLICY_TOKENS)
+    return has_storage and has_public
 
 
 class OrphanError(ValueError):
@@ -83,6 +95,12 @@ def join(
         vuln_says_exposed = vuln.asset_exposure == "Internet"
         if vuln_says_exposed != asset.internet_exposed:
             data_flags.append("exposure_source_conflict")
+        # object-storage-with-public-policy reachability (§4, phase 7): perimeter
+        # exposure is the wrong model for object storage. Flag ONLY when inventory says
+        # internal-only — that disagreement is the signal; score() reads the flag and
+        # scores exposure as reachable. internet_exposed itself is left untouched.
+        if _is_public_object_storage(vuln) and not asset.internet_exposed:
+            data_flags.append("exposure_model_mismatch")
         # cvss range check deferred from phase 1 (models.py): surface a bad value as
         # a flag rather than a hard model bound, so the finding is kept and scored.
         if not (0.0 <= vuln.cvss <= 10.0):

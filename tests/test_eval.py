@@ -31,11 +31,28 @@ def test_pairwise_meets_regression_floor() -> None:
     assert after["rate"] >= config.EVAL_PAIRWISE_FLOOR  # the CI regression gate
 
 
-def test_precision_at_5_is_perfect() -> None:
+def test_precision_at_5_is_0_8_documented_pivot_gap() -> None:
+    """precision@5 is 0.800, NOT 1.000, and that is a KNOWN, MEASURED limitation —
+    pinned here so any change that moves it fires an alarm.
+
+    The phase-7 exposure_model_mismatch rule correctly promotes V-2071 (public backup
+    bucket, now scored internet-reachable) into the top-5. It displaces Fortinet
+    (CVE-2024-21762, golden rank 2). Fortinet is the estate-wide initial-access pivot,
+    but the scorer models business impact PER SERVICE, so Remote Access / VPN-edge
+    infrastructure (customer_facing No, 0 dependents, no PCI/GDPR) is structurally
+    under-weighted despite a VPN compromise being the pivot to everything else. That
+    is this project's supporting-question-3 limitation, and 0.800 is its measured cost:
+    exactly one golden top-5 slot. The named remedy — an asset-role signal separating
+    pivot infrastructure from leaf services — is deliberately NOT built (out of scope,
+    and it would be tuning toward the golden set after seeing the output).
+
+    If this value ever changes, decide WHY before editing this number: a weight change
+    that reshuffles the top-5 is a regression to investigate, not a line to update.
+    """
     data = load_all()
     golden = harness.load_golden()
     findings = list(harness._by_vuln(data, config.WEIGHTS).values())
-    assert harness.precision_at_5(golden, findings) == 1.0
+    assert harness.precision_at_5(golden, findings) == 0.8
 
 
 def test_golden_pairwise_vuln_ids_resolve() -> None:

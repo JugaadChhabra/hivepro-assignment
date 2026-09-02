@@ -24,6 +24,7 @@ from riskagent.generate.assemble import AppState, Provenance, RiskBrief, build_s
 from riskagent.generate.llm import GroqClient
 from riskagent.generate.render import render_html
 from riskagent.ingest.csv_loader import load_all
+from riskagent.ingest.kev import load_kev
 from riskagent.ingest.nist import load_catalog
 from riskagent.models import EnrichedFinding
 from riskagent.rag.index import ChromaControlStore
@@ -33,6 +34,7 @@ def default_state_builder() -> AppState:
     """Build the real cached state: data + live NIST catalog + Chroma + Groq."""
     data = load_all()
     catalog = load_catalog()
+    kev = load_kev()  # live fetch; falls back to cache, or None if wholly unavailable
     store = ChromaControlStore()
     store.build(catalog.controls, catalog_sha256=catalog.catalog_sha256)
     meta = store.collection_metadata()
@@ -50,7 +52,9 @@ def default_state_builder() -> AppState:
         temperature=config.GROQ_TEMPERATURE,
         timeout_s=config.GROQ_TIMEOUT_S,
     )
-    return build_state(data=data, store=store, complete=client.complete, provenance=provenance)
+    return build_state(
+        data=data, store=store, complete=client.complete, provenance=provenance, kev=kev
+    )
 
 
 def _state(request: Request) -> AppState:
@@ -79,7 +83,9 @@ def create_app(state_builder: Callable[[], AppState] = default_state_builder) ->
 
     @app.get("/traces")
     def traces(request: Request) -> list[dict[str, object]]:
-        return []  # populated in phase 7 (trace.py)
+        from riskagent.generate.trace import read_traces
+
+        return read_traces(n=20)  # last N run traces, newest last
 
     @app.get("/healthz")
     def healthz(request: Request) -> dict[str, object]:

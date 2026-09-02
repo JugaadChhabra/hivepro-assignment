@@ -6,8 +6,15 @@ ordering, NOT tuned toward any desired answer.
 
 Provenance: the five weight groups and their ordering come from the MDR report's
 "Threat Intelligence Analyst Notes" ranking rubric in
-``data/synthetic_threat_report.md``. That section is the scoring rubric, not data,
-so it is encoded here rather than parsed (phase 7 adds the exact line citation).
+``data/synthetic_threat_report.md`` (the "## Threat Intelligence Analyst Notes"
+section, the five numbered factors on lines 79-83). That section is the scoring
+rubric, not data, so it is encoded here rather than parsed:
+
+  1. Internet exposure          -> exposure.internet_exposed         (line 79)
+  2. Active exploitation         -> exploitability + maturity/KEV     (line 80)
+  3. Ransomware association      -> adversary.ransomware              (line 81)
+  4. Business criticality/scope  -> business (criticality, compliance) (line 82)
+  5. Missing compensating controls -> control_gap (no_edr, ...)       (line 83)
 """
 
 from __future__ import annotations
@@ -16,10 +23,20 @@ from datetime import date
 from pathlib import Path
 
 # --- paths / cache (all gitignored; rebuilt on demand) ---
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+REPORT_PATH = DATA_DIR / "synthetic_threat_report.md"  # MDR advisory (§3 report_parser)
 CACHE_DIR = Path(__file__).resolve().parents[2] / "cache"
+KEV_CACHE_PATH = CACHE_DIR / "kev.json"  # CISA KEV catalog cache (§3 kev.py)
+TRACE_PATH = CACHE_DIR / "traces.jsonl"  # one JSONL record per pipeline run (§6 trace.py)
 NIST_CACHE_PATH = CACHE_DIR / "nist_sp800-53r5.json"
 CHROMA_DIR = CACHE_DIR / "chroma"
 CHROMA_COLLECTION = "nist_800_53"
+
+# --- CISA KEV catalog (§3, §7) — note the default branch is "develop", a main URL 404s ---
+KEV_URL = (
+    "https://raw.githubusercontent.com/cisagov/kev-data/develop/"
+    "known_exploited_vulnerabilities.json"
+)
 
 # --- NIST SP 800-53 catalog (§3, §5) ---
 NIST_CATALOG_URL = (
@@ -75,6 +92,19 @@ FIT_SECTORS = frozenset(
 )
 # compliance_scope is multi-valued; +4 if either token appears (approved reading).
 PCI_GDPR_TOKENS = frozenset({"PCI DSS", "GDPR"})
+
+# Cloud object storage carrying a public access policy (phase 7, exposure_model_mismatch).
+# Network-perimeter exposure is the wrong model for object storage: a public object
+# policy is readable via the provider's own URL regardless of network path, so a
+# perimeter scanner marks the asset internal-only for want of a route. When BOTH token
+# sets hit (object storage AND a public/permissive policy) on an asset inventoried as
+# internal-only, we raise exposure_model_mismatch and score exposure as reachable —
+# WITHOUT mutating internet_exposed (both facts survive; third exposure source, same
+# discipline as exposure_source_conflict). NARROW BY DESIGN: matches object storage with
+# a public policy, not any misconfig / firewall / exposed admin interface. Fires on
+# exactly one finding in this dataset (V-2071); asserted in tests.
+OBJECT_STORAGE_TOKENS = frozenset({"bucket", "object storage", "blob storage"})
+PUBLIC_POLICY_TOKENS = frozenset({"public", "overly permissive", "overly-permissive"})
 
 # Recovery-of-last-resort services (phase 6b, constraints P04 + P09). blast_radius
 # models FORWARD cascade via transitive_dependents; Backup and Recovery has ZERO

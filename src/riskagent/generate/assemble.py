@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -21,7 +22,10 @@ from riskagent.generate.guard import GuardResult, enforce, template_result
 from riskagent.generate.llm import build_control_text, build_evidence_block, build_prompt
 from riskagent.generate.select import SelectedRisk, select
 from riskagent.ingest.csv_loader import DataBundle
+from riskagent.ingest.kev import KevCatalog, apply_kev
+from riskagent.ingest.report_parser import parse_report
 from riskagent.models import EnrichedFinding, IntelRecord, ScoreBreakdown
+from riskagent.pipeline.campaign import apply_campaigns
 from riskagent.pipeline.control_gaps import annotate_control_gaps
 from riskagent.pipeline.intel_match import match
 from riskagent.pipeline.join import join
@@ -109,9 +113,13 @@ class AppState:
 
 
 def score_all_findings(data: DataBundle) -> list[EnrichedFinding]:
-    """The deterministic pipeline: join -> intel -> control gaps -> score, all 114."""
+    """The deterministic pipeline: join -> intel -> control gaps -> campaign objective
+    -> score, all 114. Campaign parsing/cross-check is deterministic and offline, so it
+    runs here (KEV, which needs the network, is layered on separately in the app)."""
     findings = match(join(data.vulnerabilities, data.assets, data.services), data.intel).findings
     annotate_control_gaps(findings)
+    campaigns = parse_report(config.REPORT_PATH.read_text(encoding="utf-8"))
+    apply_campaigns(findings, campaigns, data.intel)
     return score_all(findings)
 
 
@@ -240,8 +248,22 @@ def build_state(
     provenance: Provenance,
     top_n: int = 5,
     llm_deadline_s: float = config.LLM_STAGE_DEADLINE_S,
+    kev: KevCatalog | None = None,
+    write_trace_to: Path | None = None,
 ) -> AppState:
     findings = score_all_findings(data)
+    kev_join = None
+    if kev is not None:
+        # KEV is the one enrichment that needs the network, so it is layered on here
+        # rather than in score_all_findings (which eval.py runs offline). kev_status
+        # feeds the kev_listed term, so we MUST rescore after the join.
+        kev_join = apply_kev(findings, kev)
+        score_all(findings)
+        provenance = provenance.model_copy(update={
+            "kev_fetched_at": kev.fetched_at.isoformat(),
+            "kev_coverage_pct": kev_join.kev_coverage_pct,
+            "kev_staleness_warning": kev.staleness_warning,
+        })
     selected = select(findings, top_n=top_n)
     known_actors = {r.threat_actor for r in data.intel} | {r.campaign_name for r in data.intel}
 
@@ -267,4 +289,10 @@ def build_state(
             "explanations_template": sum(1 for e in entries if e.explanation_source == "template"),
         }
     )
-    return AppState(brief=RiskBrief(entries=entries, provenance=provenance), findings=findings)
+    brief = RiskBrief(entries=entries, provenance=provenance)
+    # observability: one JSONL trace per run. Lazy import breaks the assemble<->trace
+    # cycle (trace needs RiskBrief's type).
+    from riskagent.generate.trace import build_trace, write_trace
+
+    write_trace(build_trace(brief, kev_join), path=write_trace_to)
+    return AppState(brief=brief, findings=findings)

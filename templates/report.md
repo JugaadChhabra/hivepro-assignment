@@ -14,6 +14,9 @@ Ranked deterministically over all findings; the sentence explaining each rank is
 - _{{ e.multi_env_note }}._
 {% endif %}
 - **Evidence:** {{ e.cve }} · CVSS {{ '%g' | format(e.cvss) }} · {{ 'internet-facing' if e.internet_exposed else 'internal' }} · {{ 'exploit available' if e.exploit_available else 'no public exploit' }} · {{ 'no auth required' if not e.auth_required else 'auth required' }} · {{ e.days_open }} days open · EDR {{ 'absent' if not e.edr_installed else 'present' }}
+{% if 'exposure_model_mismatch' in e.data_flags %}
+- ⚠️ **Exposure:** inventory records this asset as internal-only, but a public object policy may make it reachable via the provider URL — verify before deprioritising.
+{% endif %}
 - **Threat:** {{ e.threat_summary }}
 - **Control:** {{ e.control_id }} {{ e.control_title }}{% if e.enhancements %}, particularly {{ e.enhancements | map(attribute='control_id') | join(', ') }}{% endif %} — {{ e.control_summary }}
 {% for g in e.gap_controls %}

@@ -397,6 +397,55 @@ TESTS:
 ## Phase 7 — Report parser, KEV, tracing
 
 ```
+FIRST, before the parser/KEV/trace work: resolve the exposure_model_mismatch.
+This was sixth of seven on the phase-6 queue and did not make the 6b cut (my
+sequencing error); it is promoted to the front of phase 7 because it is the one
+outstanding item that can change the golden top-5, and phase 8 writes the README
+around that top-5.
+
+The defect: backup-storage-prod (CLOUD-SYN-001, V-2071) is marked
+internet_exposed = No while carrying a PUBLIC object-storage policy. Network-
+perimeter exposure is the wrong model for cloud object storage — a public object
+policy is readable via the provider's own URL regardless of network path, so a
+perimeter scanner marks it unexposed for want of a route.
+
+PINNED RULE (do NOT reopen this decision):
+  IF affected_component OR vulnerability_name indicates cloud object storage
+  with a public / overly-permissive access policy, THEN
+    (a) append exposure_model_mismatch to data_flags, AND
+    (b) score the exposure term AS IF internet-reachable.
+  Do NOT mutate internet_exposed. Both facts survive — the CSV's internal-only
+  bit and the reachability disagreement — and nothing is silently overwritten.
+  This is the same two-channel discipline as exact-vs-semantic intel and
+  retrieval-vs-rule gap_controls: a third source of exposure evidence recorded
+  alongside the CSV, not resolved into it. §4 already flags exposure
+  disagreements rather than resolving them; this extends that, it does not
+  break it.
+
+Constraints on the implementation:
+- NARROW. Public-access policy on object storage ONLY. Not "any misconfig",
+  not firewall rules (SC-7 territory, already handled), not exposed admin
+  interfaces. Assert the fired count in a test; expected 1-2 findings. If it
+  fires on more than that the predicate is too loose — tighten it, do not ship.
+  DATA CHECK (this dataset): a storage-AND-public predicate over
+  vulnerability_name + affected_component fires on exactly ONE finding, V-2071
+  ("Storage Bucket Public Policy Misconfiguration" / "Object Storage Policy"),
+  and correctly excludes V-2031 ("Missing Encryption at Rest" / "Storage
+  Encryption") — no public policy, so not reachability. Assert == 1 here.
+- RENDERED, not just traced. The flag must appear in the report output, e.g.:
+  "inventory records this asset as internal-only, but a public object policy
+  may make it reachable via the provider URL — verify before deprioritising."
+- precision@5 BEFORE and AFTER, reported. The golden set's reversal_trigger
+  already states the expected outcome: V-2071 enters the top-5 at ~rank 2 (live
+  exfiltration, no EDR) and V-2009 (current rank 5) drops out. If the top-5 set
+  shifts and precision@5 STAYS 5/5 (1.000), the conditional worked — then update
+  golden_set.yaml's top_five AND near_misses to match the new set. If
+  precision@5 DROPS, STOP and report: something disagrees with the trigger and
+  must be resolved before phase 8, not papered over. Record the before/after
+  delta the same way the phase-6 blast-radius work did.
+
+THEN the parser/KEV/trace work:
+
 Implement ingest/report_parser.py, ingest/kev.py, and trace.py per §3 and §6.
 
 report_parser.py: regex the five campaign blocks into Campaign records. Then

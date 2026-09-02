@@ -24,6 +24,19 @@ def test_join_row_count_and_no_orphans() -> None:
     assert all(f.service.business_service == f.asset.business_service for f in findings)
 
 
+def test_exposure_model_mismatch_fires_narrowly() -> None:
+    # phase 7: public-object-storage reachability flag must be NARROW — exactly the one
+    # bucket finding (V-2071), and NOT the encryption-at-rest storage finding (V-2031).
+    findings = _joined()
+    fired = [f.vulnerability.vuln_id for f in findings if "exposure_model_mismatch" in f.data_flags]
+    assert fired == ["V-2071"], f"expected exactly [V-2071], got {fired}"
+    v2031 = next(f for f in findings if f.vulnerability.vuln_id == "V-2031")
+    assert "exposure_model_mismatch" not in v2031.data_flags  # storage, but no public policy
+    # the flag does NOT mutate the inventory bit — both facts survive
+    v2071 = next(f for f in findings if f.vulnerability.vuln_id == "V-2071")
+    assert v2071.asset.internet_exposed is False
+
+
 def test_orphan_vuln_raises() -> None:
     b = load_all()
     ghost = b.vulnerabilities[0].model_copy(update={"asset_id": "A-DOES-NOT-EXIST"})

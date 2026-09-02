@@ -44,6 +44,15 @@ def score(
         pts = w["exposure"]["internet_exposed"]
         exposure += pts
         reasons.append(f"internet-exposed (+{pts:g})")
+    elif "exposure_model_mismatch" in finding.data_flags:
+        # public object-storage policy: reachable via provider URL despite internal-only
+        # inventory (§4, phase 7). Scored as reachable; internet_exposed stays False.
+        pts = w["exposure"]["internet_exposed"]
+        exposure += pts
+        reasons.append(
+            f"public object-storage policy, internet-reachable despite "
+            f"internal-only inventory (+{pts:g})"
+        )
     if asset.environment == "Production":
         pts = w["exposure"]["production"]
         exposure += pts
@@ -170,8 +179,10 @@ def score(
         pts = w["blast_radius"]["dependents_low"]
         blast_radius += pts
         reasons.append(f"{dependents} service(s) depend on this (+{pts:g})")
-    # campaign objective: DORMANT until phase 7 wires report_parser (like kev_status).
-    # campaign_objective is None for all 114 now, so this contributes 0.
+    # campaign objective (phase 7): LIVE. report_parser + apply_campaigns set
+    # campaign_objective from the matched campaign's cve_chain before scoring, so ~19
+    # findings now carry theft/fraud consequence points here. ransomware_deployment and
+    # None contribute 0 (ransomware is already captured by the adversary term).
     if finding.campaign_objective in {"credential_theft", "ip_theft"}:
         pts = w["blast_radius"]["objective_theft"]
         blast_radius += pts

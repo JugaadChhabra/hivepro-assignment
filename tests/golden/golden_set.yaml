@@ -561,16 +561,26 @@ near_misses:
       the most forgiving of the six candidates. Everything ranked above it is
       a live, directly reachable path to customer or payment data.
     reversal_trigger: >
-      DATA MODEL DEFECT SUSPECTED — resolve before treating this ranking as
-      final. "Exposed: No" on a bucket carrying a public object policy is an
-      incoherent pairing: public object-level policies are frequently readable
-      via the cloud provider's own URL regardless of network position, and
-      perimeter scanners mark them unexposed for want of a network path.
-      Network-perimeter exposure is the wrong model for cloud object storage.
-      If the flag is wrong, this is not a near miss — it is live exfiltration
-      on an asset with no EDR, it enters at rank 2, and rank 5 (V-2009) takes
-      this slot instead. See the exposure_model_mismatch item in the phase 6
-      notes.
+      DATA MODEL DEFECT — RESOLVED in phase 7. "Exposed: No" on a bucket
+      carrying a public object policy is an incoherent pairing: public
+      object-level policies are frequently readable via the cloud provider's
+      own URL regardless of network position, and perimeter scanners mark them
+      unexposed for want of a network path. Network-perimeter exposure is the
+      wrong model for cloud object storage.
+      Phase 7 added the exposure_model_mismatch rule (score exposure as
+      reachable, internet_exposed left untouched). V-2071 duly entered the
+      top-5. OUTCOME DIFFERED FROM THIS PREDICTION, on purpose kept visible:
+      this note predicted V-2009 would be the casualty ("rank 5 takes this slot
+      instead"). It was not. Phase 6b's rto_hours term — written AFTER this
+      prediction — gave V-2009 (Payment Processing, 1h RTO) +5 and lifted it
+      clear of the cut (V-2009 = 97.3). The finding actually displaced was
+      Fortinet, CVE-2024-21762 (vpn-edge, 89.8), golden rank 2. That drop is
+      NOT a scoring error to fix here: it is the supporting-question-3
+      limitation (the scorer models per-service business impact, so the VPN-edge
+      initial-access pivot is under-weighted). precision@5 = 0.800 is its
+      measured cost. top_five is deliberately LEFT UNCHANGED — updating it to
+      match the scorer would be tuning golden to output after seeing it. See
+      tests/test_eval.py::test_precision_at_5_is_0_8_documented_pivot_gap.
 
   - cve: CVE-2023-22527
     vulnerability_name: Confluence RCE via OGNL Injection

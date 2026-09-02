@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from fakes import FakeControlStore, mini_controls
@@ -73,6 +75,34 @@ def test_index_renders_html_brief() -> None:
     assert resp.status_code == 200
     assert "Top 5 Cyber Risks" in resp.text
     assert "#1" in resp.text
+
+
+def test_traces_endpoint_returns_run_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # /traces must return real run traces, not the phase-5 empty stub. Point the trace
+    # file at a temp path so both the write (in build_state) and read (in the endpoint)
+    # use the same isolated file.
+    from riskagent import config
+
+    trace_file = tmp_path / "traces.jsonl"
+    monkeypatch.setattr(config, "TRACE_PATH", trace_file)
+    with TestClient(create_app(_builder)) as client:
+        traces = client.get("/traces").json()
+    assert isinstance(traces, list) and traces  # non-empty
+    last = traces[-1]
+    assert last["run_at"] == "2026-09-02T00:00:00+00:00"
+    assert len(last["risks"]) == 5  # the top five
+    assert "input_sha256" in last and len(last["input_sha256"]) == 6
+
+
+def test_exposure_model_mismatch_banner_renders_in_html() -> None:
+    # phase 7: the public-object-storage reachability flag must reach the RENDERED
+    # report, not just the trace. V-2071 (backup bucket) is in the top-5, so its
+    # banner text must appear in the served HTML.
+    with TestClient(create_app(_builder)) as client:
+        html = client.get("/").text
+    assert "object policy may make it reachable via the provider URL" in html
 
 
 def test_healthz_returns_provenance_not_bare_status() -> None:

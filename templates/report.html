@@ -44,6 +44,11 @@
        &middot; {{ 'no auth required' if not e.auth_required else 'auth required' }}
        &middot; {{ e.days_open }} days open
        &middot; EDR {{ 'absent' if not e.edr_installed else 'present' }}</p>
+    {% if 'exposure_model_mismatch' in e.data_flags %}
+    <p class="banner">&#9888; Inventory records this asset as internal-only, but a public
+       object policy may make it reachable via the provider URL &mdash; verify before
+       deprioritising.</p>
+    {% endif %}
     <p class="threat{{ '' if e.intel else ' none' }}"><span class="label">Threat:</span>
        {{ e.threat_summary }}</p>
     <p><span class="label">Control:</span> {{ e.control_id }} {{ e.control_title }}{% if e.enhancements %},
