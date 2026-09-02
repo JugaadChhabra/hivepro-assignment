@@ -20,4 +20,10 @@ run:
 	uvicorn riskagent.app:app --host 0.0.0.0 --port 7860
 
 eval:
-	@echo "make eval: not implemented until phase 6 (eval.py)" && exit 1
+	python eval.py
+
+eval-retrieval:
+	python eval.py --retrieval
+
+dump:
+	python eval.py --dump scored_findings.csv

@@ -55,6 +55,12 @@ RETRIEVAL_DISTANCE_THRESHOLD = 1.0
 # wall-clock, which would make scores drift day to day and break purity.
 REFERENCE_DATE = date(2026, 4, 24)
 
+# Regression gate (§7): eval.py fails CI if non-contested pairwise drops below this.
+# Current measured value (after blast radius). The two unsatisfied non-contested
+# pairs (P03 exposure-vs-internal-ransomware, P09 recovery_of_last_resort) are
+# documented consequence-gaps the current signals do not close — NOT overfit away.
+EVAL_PAIRWISE_FLOOR = 0.6
+
 STALE_LAST_SEEN_DAYS = 30  # asset staleness: sets a flag, adds ZERO points (§4)
 RECENT_INTEL_DAYS = 30  # adversary recency window
 DAYS_OPEN_THRESHOLD = 30  # control-gap: vuln open longer than this
@@ -98,6 +104,15 @@ WEIGHTS: dict[str, dict[str, float]] = {
         "no_edr": 5.0,
         "no_vendor_patch": 3.0,
         "days_open": 2.0,
+    },
+    # Blast radius (§7) — its OWN group so the other group maxima stay stable and
+    # the tuning table reads before/after cleanly. Discovered via the golden set:
+    # the scorer modelled likelihood well and consequence barely.
+    "blast_radius": {
+        "dependents_high": 6.0,  # transitive_dependents >= 3
+        "dependents_low": 3.0,  # transitive_dependents in 1..2
+        "objective_theft": 6.0,  # objective credential_theft / ip_theft (dormant → phase 7)
+        "objective_fraud": 4.0,  # objective payment_fraud (dormant → phase 7)
     },
     # TOTAL lookup maps — MUST cover the full enum domain the scorer reads, so an
     # unhandled value crashes loudly (KeyError) rather than silently scoring 0.

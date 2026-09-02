@@ -139,9 +139,13 @@ def enforce(
     intel_empty: bool,
     known_actors: set[str],
     reasons: list[str],
+    extra_control_ids: frozenset[str] = frozenset(),
 ) -> GuardResult:
-    """Call the model, validate, retry once on violation, else template fallback."""
-    retrieved_ids = {r.control_id for r in retrieved}
+    """Call the model, validate, retry once on violation, else template fallback.
+
+    ``extra_control_ids`` are also-valid citations beyond the retrieved set — the
+    rule-mapped gap controls (e.g. SI-3), so the LLM citing SI-3 is not rejected."""
+    retrieved_ids = {r.control_id for r in retrieved} | extra_control_ids
     fallback = retrieved[0] if retrieved else None
     current = prompt
     violations: list[str] = []

@@ -93,6 +93,9 @@ class BusinessService(BaseModel):
     rto_hours: int
     depends_on: str | None  # 13 rows are blank — a service with no dependencies
     risk_appetite: str
+    # Derived in join.py from the depends_on graph — how many services fail,
+    # directly or transitively, if this one does. Not a CSV column; defaults 0.
+    transitive_dependents: int = 0
 
 
 class RemediationGuidance(BaseModel):
@@ -139,6 +142,7 @@ class ScoreBreakdown(BaseModel):
     adversary: float
     business: float
     control_gap: float
+    blast_radius: float  # transitive-dependent fan-out + (phase-7) campaign objective
     total: float
     reasons: list[str]  # one human-readable string per contributing factor
 
@@ -158,4 +162,6 @@ class EnrichedFinding(BaseModel):
     kev_status: Literal["listed", "not_listed", "unknown"] = "unknown"
     control_gaps: list[str] = []
     data_flags: list[str] = []  # staleness, no owner, exposure disagreement
+    # Set in phase 7 from report_parser's Campaign records; scored dormant until then.
+    campaign_objective: str | None = None
     score: ScoreBreakdown | None = None

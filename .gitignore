@@ -222,3 +222,6 @@ cache/
 
 # Editor settings
 .vscode/
+
+# Generated eval dump
+scored_findings.csv

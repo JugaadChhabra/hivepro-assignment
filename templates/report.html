@@ -49,6 +49,10 @@
     <p><span class="label">Control:</span> {{ e.control_id }} {{ e.control_title }}{% if e.enhancements %},
        particularly {{ e.enhancements | map(attribute='control_id') | join(', ') }}{% endif %}
        &mdash; {{ e.control_summary }}</p>
+    {% for g in e.gap_controls %}
+    <p><span class="label">Also applies:</span> {{ g.control_id }} {{ g.title }}
+       &mdash; {{ g.reason }}</p>
+    {% endfor %}
     <p><span class="label">Why this ranks #{{ e.rank }}:</span> {{ e.why_ranked }}
        {% if e.explanation_source == 'template' %}<span class="tag">template</span>{% endif %}</p>
     {% if e.data_flags %}

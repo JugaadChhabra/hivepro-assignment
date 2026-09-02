@@ -141,7 +141,7 @@ def _scored_finding() -> EnrichedFinding:
          "rto_hours": 1, "depends_on": None, "risk_appetite": "Low"}
     )
     score = ScoreBreakdown(exposure=18, exploitability=8, adversary=0, business=9, control_gap=0,
-                           total=35, reasons=["internet-exposed (+18)"])
+                           blast_radius=0, total=35, reasons=["internet-exposed (+18)"])
     return EnrichedFinding(vulnerability=vuln, asset=asset, service=service, intel=[], score=score)
 
 
@@ -167,6 +167,6 @@ def test_enhancement_threshold_and_cap() -> None:
         affected_environments=["Production"], finding=_scored_finding(),
     )
     guard_result = template_result(risk.score.reasons, controls, "x")  # picks control_id SI-2
-    entry = _build_entry(risk, controls, guard_result)
+    entry = _build_entry(risk, controls, [], guard_result)
     assert entry.enhancement_match_count == 2  # both matches recorded
     assert [e.control_id for e in entry.enhancements] == ["SI-2(5)"]  # weak one suppressed

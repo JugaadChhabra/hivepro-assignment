@@ -102,6 +102,23 @@ def test_fortinet_unpatched_firmware_returns_si2(store: ChromaControlStore) -> N
     assert "SI-2" in [c.control_id for c in result.chunks]
 
 
+def test_unpatched_with_no_edr_surfaces_both_si2_and_si3(store: ChromaControlStore) -> None:
+    # §7 item 3: unioning the gap families keeps the second remediation dimension
+    # reachable — patching (SI-2) AND the missing monitoring (SI-3) both in top 3.
+    finding = _finding(
+        vulnerability_name="Fortinet SSL-VPN Heap Buffer Overflow RCE",
+        affected_component="FortiOS SSL-VPN firmware",
+        control_gaps=["no_vendor_patch", "no_edr"],
+    )
+    result = retrieve(finding, store)
+    chunk_ids = {c.control_id for c in result.chunks}
+    gap_ids = {g.control_id for g in result.gap_controls}
+    assert "SI-2" in chunk_ids  # patch it — a retrieval hit
+    assert "SI-3" in chunk_ids | gap_ids  # nothing would have noticed — the rule channel
+    assert "SI-3" in gap_ids  # specifically: SI-3 arrives by rule, not by displacing a hit
+    assert result.gap_controls[0].source == "rule"
+
+
 def test_eol_internal_returns_sa22(store: ChromaControlStore) -> None:
     result = retrieve(_eol_finding(exposed=False, exploit=False), store)
     assert result.finding_type == "end_of_life_software"

@@ -27,10 +27,17 @@ from riskagent.pipeline.intel_match import match
 from riskagent.pipeline.join import join
 from riskagent.pipeline.score import score_all
 from riskagent.rag.index import ControlStore
-from riskagent.rag.retrieve import RetrievedControl, retrieve
+from riskagent.rag.retrieve import GapControl, RetrievedControl, retrieve
 
-# one context per selected risk: the risk, its retrieved controls, evidence, prompt
-_Context = tuple[SelectedRisk, list[RetrievedControl], str, str]
+# one context per selected risk: risk, retrieved controls, rule gap controls, evidence, prompt
+_Context = tuple[SelectedRisk, list[RetrievedControl], list[GapControl], str, str]
+
+# human phrase for why a rule control applies, keyed by the control_gap
+_GAP_REASON = {
+    "no_edr": "no EDR installed on this host",
+    "no_owner": "asset has no assigned owner",
+    "stale_asset_record": "asset inventory record is stale",
+}
 
 
 class Provenance(BaseModel):
@@ -51,6 +58,13 @@ class Provenance(BaseModel):
 class EnhancementRef(BaseModel):
     control_id: str
     title: str
+
+
+class GapControlRef(BaseModel):
+    control_id: str
+    title: str
+    reason: str  # why it applies by rule (e.g. "no EDR installed on this host")
+    source: str = "rule"
 
 
 class RiskEntry(BaseModel):
@@ -76,6 +90,7 @@ class RiskEntry(BaseModel):
     control_summary: str
     enhancements: list[EnhancementRef]
     enhancement_match_count: int  # pre-cap matches (a query-quality signal for phase 6)
+    gap_controls: list[GapControlRef]  # rule-mapped controls (e.g. SI-3), separate channel
     why_ranked: str
     explanation_source: str
     data_flags: list[str]
@@ -122,7 +137,10 @@ def _multi_env_note(assets: list[str], environments: list[str]) -> str:
 
 
 def _build_entry(
-    risk: SelectedRisk, controls: list[RetrievedControl], guard_result: GuardResult
+    risk: SelectedRisk,
+    controls: list[RetrievedControl],
+    gap_controls: list[GapControl],
+    guard_result: GuardResult,
 ) -> RiskEntry:
     finding = risk.finding
     chosen = next(
@@ -162,6 +180,11 @@ def _build_entry(
         control_summary=guard_result.output.control_summary,
         enhancements=[EnhancementRef(control_id=e.control_id, title=e.title) for e in shown],
         enhancement_match_count=match_count,
+        gap_controls=[
+            GapControlRef(control_id=g.control_id, title=g.title,
+                          reason=_GAP_REASON.get(g.gap, g.gap), source=g.source)
+            for g in gap_controls
+        ],
         why_ranked=guard_result.output.why_ranked,
         explanation_source=guard_result.explanation_source,
         data_flags=finding.data_flags,
@@ -178,13 +201,14 @@ def _explain_stage(
     """Run the 5 guarded explanations concurrently under an outer wall-clock deadline."""
 
     def explain(context: _Context) -> RiskEntry:
-        risk, controls, evidence_block, prompt = context
+        risk, controls, gap_controls, evidence_block, prompt = context
         guard_result = enforce(
             complete, prompt, evidence_block=evidence_block, retrieved=controls,
             intel_empty=not risk.finding.intel, known_actors=known_actors,
             reasons=risk.score.reasons,
+            extra_control_ids=frozenset(g.control_id for g in gap_controls),
         )
-        return _build_entry(risk, controls, guard_result)
+        return _build_entry(risk, controls, gap_controls, guard_result)
 
     pool = ThreadPoolExecutor(max_workers=max(1, len(contexts)))
     try:
@@ -198,11 +222,11 @@ def _explain_stage(
             try:
                 entries.append(future.result(timeout=max(0.0, remaining)))
             except TimeoutError:
-                risk, controls, _, _ = ctx
+                risk, controls, gap_controls, _, _ = ctx
                 fallback = template_result(
                     risk.score.reasons, controls, "llm stage deadline exceeded"
                 )
-                entries.append(_build_entry(risk, controls, fallback))
+                entries.append(_build_entry(risk, controls, gap_controls, fallback))
         return entries
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
@@ -226,10 +250,14 @@ def build_state(
     # for concurrent encode() on a shared model (would give wrong results, not a crash).
     contexts: list[_Context] = []
     for risk in selected:
-        controls = retrieve(risk.finding, store).chunks
+        result = retrieve(risk.finding, store)
+        controls = result.chunks
         evidence_block = build_evidence_block(risk)
-        prompt = build_prompt(evidence_block, risk.score.reasons, build_control_text(controls))
-        contexts.append((risk, controls, evidence_block, prompt))
+        control_text = build_control_text(controls)
+        for gap in result.gap_controls:  # rule controls are also citable prose sources
+            control_text += f"\n\n{gap.control_id} {gap.title}: {gap.statement}"
+        prompt = build_prompt(evidence_block, risk.score.reasons, control_text)
+        contexts.append((risk, controls, result.gap_controls, evidence_block, prompt))
 
     entries = _explain_stage(contexts, complete, known_actors, llm_deadline_s)
 

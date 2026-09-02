@@ -45,6 +45,26 @@ FAMILY_HINTS: dict[str, list[str]] = {
     "container_misconfiguration": ["AC", "CM", "SC"],
 }
 
+# Canonical control(s) a gap surfaces by DETERMINISTIC RULE (§7 item 3). SI-3
+# shares the SI family with the patch controls (SI-2/SI-7) that outrank it, so
+# similarity search alone can't lift it into the top-3. Rather than evict a
+# retrieval hit, these are returned as a SEPARATE gap_controls channel (like the
+# confirmed/possible intel split): guaranteed, source-tagged "rule", and never
+# counted against recall@3. Matches the golden R04/R08 labels.
+GAP_CONTROLS: dict[str, list[str]] = {
+    "no_edr": ["SI-3", "SI-4"],
+    "no_owner": ["CM-8", "PM-5"],
+    "stale_asset_record": ["CM-8"],
+}
+
+GAP_FAMILY_HINTS: dict[str, list[str]] = {
+    "no_edr": ["SI", "AU"],  # malicious-code protection, monitoring, audit
+    "unauthenticated_exploit_path": ["IA", "AC"],
+    "no_vendor_patch": ["SI", "RA"],
+    "stale_asset_record": ["CM"],
+    "no_owner": ["CM", "PM"],
+}
+
 # Canonical query phrase per finding_type — an honest description of the finding
 # (never a NIST control's title), so the finding-type signal carries real weight
 # in the embedding rather than being drowned by generic exposure/exploit tokens.

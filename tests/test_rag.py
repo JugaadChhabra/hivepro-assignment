@@ -139,3 +139,25 @@ def test_classifier_outputs_are_all_mapped() -> None:
 def test_family_hints_cover_all_22_golden_types() -> None:
     missing = _GOLDEN_FINDING_TYPES - set(FAMILY_HINTS)
     assert not missing, f"FAMILY_HINTS missing golden finding_types: {missing}"
+
+
+def test_gap_controls_are_a_separate_rule_channel() -> None:
+    # no_edr must surface SI-3 by RULE — in gap_controls, not by evicting a chunk.
+    store = FakeControlStore(mini_controls(), {"SI-2": 0.2, "SI-7": 0.3, "RA-5": 0.4})
+    finding = _finding(comp="FortiOS firmware", gaps=["no_vendor_patch", "no_edr"])
+    result = retrieve(finding, store, finding_type="unpatched_software")
+    chunk_ids = {c.control_id for c in result.chunks}
+    gap_ids = {g.control_id for g in result.gap_controls}
+    assert "SI-3" in gap_ids  # guaranteed by the no_edr rule
+    assert "SI-3" not in chunk_ids  # it did NOT displace a retrieval hit
+    assert all(g.source == "rule" for g in result.gap_controls)
+    assert all(g.gap == "no_edr" for g in result.gap_controls if g.control_id == "SI-3")
+
+
+def test_gap_control_deduped_against_retrieval_hit() -> None:
+    # if SI-3 is already a retrieval hit, it must NOT be duplicated in gap_controls
+    store = FakeControlStore(mini_controls(), {"SI-3": 0.1, "SI-2": 0.2, "SI-7": 0.3})
+    finding = _finding(comp="x", gaps=["no_edr"])
+    result = retrieve(finding, store, finding_type="unpatched_software")
+    assert "SI-3" in {c.control_id for c in result.chunks}
+    assert "SI-3" not in {g.control_id for g in result.gap_controls}  # prefer the hit

@@ -182,6 +182,27 @@ def test_staleness_flags_but_adds_zero_points() -> None:
     assert not any("stale asset record" in r for r in fresh_score.reasons)
 
 
+def test_blast_radius_scores_transitive_dependents() -> None:
+    zero = make_finding(service=make_service())  # transitive_dependents defaults 0
+    high = make_finding(service=make_service(transitive_dependents=5))
+    low = make_finding(service=make_service(transitive_dependents=2))
+    assert score(zero).blast_radius == 0.0
+    assert score(high).blast_radius == WEIGHTS["blast_radius"]["dependents_high"]  # >=3 -> +6
+    assert score(low).blast_radius == WEIGHTS["blast_radius"]["dependents_low"]  # 1..2 -> +3
+
+
+def test_campaign_objective_is_dormant_for_all_114() -> None:
+    # the objective term depends on phase-7 report_parser; it must contribute 0 now
+    b = load_all()
+    findings = match(join(b.vulnerabilities, b.assets, b.services), b.intel).findings
+    assert all(f.campaign_objective is None for f in findings)
+    # a finding's blast_radius equals its dependents-only contribution (no objective points)
+    for f in findings:
+        dependents = f.service.transitive_dependents
+        expected = 6.0 if dependents >= 3 else 3.0 if dependents >= 1 else 0.0
+        assert score(f).blast_radius == expected
+
+
 def test_every_scored_enum_value_is_mapped() -> None:
     """Guard against the maturity bug recurring: every enum value the scorer looks
     up in a TOTAL map must have a defined branch, so none can silently score 0.

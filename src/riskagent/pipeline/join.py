@@ -23,6 +23,34 @@ class OrphanError(ValueError):
     is impossible, so it signals a broken pipeline, not a data variant."""
 
 
+def transitive_dependent_counts(services: Iterable[BusinessService]) -> dict[str, int]:
+    """How many services fail (directly or transitively) if each one fails (§7 blast radius).
+
+    ``X depends_on d`` means X fails when d fails, so X is a dependent of d. We build
+    the reverse graph and count reachable dependents. TRAVERSAL USES A VISITED SET —
+    the data is acyclic today, but a cycle must terminate, not hang.
+    """
+    dependents: dict[str, set[str]] = {}  # d -> services that directly depend on d
+    for service in services:
+        needs = [t.strip() for t in (service.depends_on or "").split(",") if t.strip()]
+        for dependency in needs:
+            dependents.setdefault(dependency, set()).add(service.business_service)
+
+    counts: dict[str, int] = {}
+    for service in services:
+        seen: set[str] = set()
+        stack = list(dependents.get(service.business_service, ()))
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            stack.extend(dependents.get(node, ()))
+        seen.discard(service.business_service)  # a cycle can revisit self; don't count it
+        counts[service.business_service] = len(seen)
+    return counts
+
+
 def join(
     vulns: Iterable[Vulnerability],
     assets: Iterable[Asset],
@@ -30,6 +58,11 @@ def join(
 ) -> list[EnrichedFinding]:
     asset_by_id = {a.asset_id: a for a in assets}
     service_by_name = {s.business_service: s for s in services}
+
+    # annotate each service with its transitive-dependent count (blast radius, §7)
+    counts = transitive_dependent_counts(service_by_name.values())
+    for name, svc in service_by_name.items():
+        svc.transitive_dependents = counts[name]
 
     findings: list[EnrichedFinding] = []
     for vuln in vulns:

@@ -140,19 +140,42 @@ def score(
         control_gap += pts
         reasons.append(f"open {vuln.days_open} days (+{pts:g})")
 
+    # --- Blast radius (max 12) — consequence/fan-out, NOT likelihood (§7) ---
+    blast_radius = 0.0
+    dependents = service.transitive_dependents
+    if dependents >= 3:
+        pts = w["blast_radius"]["dependents_high"]
+        blast_radius += pts
+        reasons.append(f"{dependents} services depend on this (+{pts:g})")
+    elif dependents >= 1:
+        pts = w["blast_radius"]["dependents_low"]
+        blast_radius += pts
+        reasons.append(f"{dependents} service(s) depend on this (+{pts:g})")
+    # campaign objective: DORMANT until phase 7 wires report_parser (like kev_status).
+    # campaign_objective is None for all 114 now, so this contributes 0.
+    if finding.campaign_objective in {"credential_theft", "ip_theft"}:
+        pts = w["blast_radius"]["objective_theft"]
+        blast_radius += pts
+        reasons.append(f"campaign objective {finding.campaign_objective} (+{pts:g})")
+    elif finding.campaign_objective == "payment_fraud":
+        pts = w["blast_radius"]["objective_fraud"]
+        blast_radius += pts
+        reasons.append(f"campaign objective payment_fraud (+{pts:g})")
+
     # --- Staleness: FLAG ONLY, contributes ZERO to the total (§4 point 2) ---
     if asset.last_seen_days > config.STALE_LAST_SEEN_DAYS:
         reasons.append(
             f"stale asset record: last seen {asset.last_seen_days}d ago (+0, flag only)"
         )
 
-    total = exposure + exploitability + adversary + business + control_gap
+    total = exposure + exploitability + adversary + business + control_gap + blast_radius
     return ScoreBreakdown(
         exposure=exposure,
         exploitability=exploitability,
         adversary=adversary,
         business=business,
         control_gap=control_gap,
+        blast_radius=blast_radius,
         total=total,
         reasons=reasons,
     )

@@ -25,7 +25,13 @@ from dataclasses import dataclass, replace
 
 from riskagent import config
 from riskagent.models import EnrichedFinding
-from riskagent.rag.families import FAMILY_HINTS, FINDING_TYPE_QUERY, classify_finding_type
+from riskagent.rag.families import (
+    FAMILY_HINTS,
+    FINDING_TYPE_QUERY,
+    GAP_CONTROLS,
+    GAP_FAMILY_HINTS,
+    classify_finding_type,
+)
 from riskagent.rag.index import ControlChunk, ControlStore
 
 _UNKNOWN = "unknown"
@@ -53,8 +59,22 @@ class RetrievedControl:
 class RetrievalResult:
     finding_type: str
     query: str
-    chunks: list[RetrievedControl]
+    chunks: list[RetrievedControl]  # top-k by similarity (family-union filtered)
+    gap_controls: list[GapControl]  # rule-mapped from control_gaps; guaranteed, not searched
     flags: list[str]  # e.g. ["family_filter_fallback"]
+
+
+@dataclass(frozen=True)
+class GapControl:
+    """A control that applies by DETERMINISTIC RULE from a control gap, not by
+    similarity search (e.g. no_edr -> SI-3). A separate channel from ``chunks`` so
+    recall is measured on retrieval alone and the trace can tell rule from search."""
+
+    control_id: str
+    title: str
+    statement: str
+    gap: str  # the control_gap that produced it
+    source: str = "rule"
 
 
 def build_query(finding: EnrichedFinding, finding_type: str) -> str:
@@ -128,10 +148,37 @@ def retrieve(
         raw = store.query(query, families=None, k=over)  # no hint — unfiltered
         flags.append("family_filter_fallback")
     else:
-        raw = store.query(query, families=FAMILY_HINTS[ft], k=over)
+        # union the finding_type families with each control gap's families, so a
+        # second remediation dimension (e.g. no_edr -> SI-3/AU) stays reachable
+        families = set(FAMILY_HINTS[ft])
+        for gap in finding.control_gaps:
+            families.update(GAP_FAMILY_HINTS.get(gap, ()))
+        raw = store.query(query, families=sorted(families), k=over)
         if not raw or raw[0].distance > threshold:
             raw = store.query(query, families=None, k=over)
             flags.append("family_filter_fallback")
 
     chunks = _collapse_to_base(raw, store, k)
-    return RetrievalResult(finding_type=ft, query=query, chunks=chunks, flags=flags)
+    gap_controls = _gap_controls(finding.control_gaps, chunks, store)
+    return RetrievalResult(
+        finding_type=ft, query=query, chunks=chunks, gap_controls=gap_controls, flags=flags
+    )
+
+
+def _gap_controls(
+    gaps: list[str], chunks: list[RetrievedControl], store: ControlStore
+) -> list[GapControl]:
+    """Deterministic rule channel: map each control gap to its canonical control(s)
+    (no_edr -> SI-3). Deduped against the retrieved chunks (prefer the search hit)
+    and against each other. Never competes with chunks, so recall is unaffected."""
+    shown = {c.control_id for c in chunks}
+    result: list[GapControl] = []
+    for gap in gaps:
+        for control_id in GAP_CONTROLS.get(gap, ()):
+            if control_id in shown:
+                continue
+            control = store.get(control_id)
+            if control is not None:
+                result.append(GapControl(control_id, control.title, control.statement, gap))
+                shown.add(control_id)
+    return result

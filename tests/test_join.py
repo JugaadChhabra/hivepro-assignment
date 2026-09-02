@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from riskagent.ingest.csv_loader import load_all
-from riskagent.models import Asset, EnrichedFinding, Vulnerability
+from riskagent.models import Asset, BusinessService, EnrichedFinding, Vulnerability
 from riskagent.pipeline.control_gaps import annotate_control_gaps, control_gaps
-from riskagent.pipeline.join import OrphanError, join
+from riskagent.pipeline.join import OrphanError, join, transitive_dependent_counts
 
 
 def _joined() -> list[EnrichedFinding]:
@@ -85,6 +85,37 @@ def test_control_gap_tags_trace_to_source() -> None:
         assert ("control_deficiency" in f.control_gaps) == f.vulnerability.cve.startswith(
             "CTRL-SYN-"
         )
+
+
+def _svc(name: str, depends_on: str | None) -> BusinessService:
+    return BusinessService.model_validate(
+        {"business_service": name, "business_owner": "o", "business_impact": "x",
+         "customer_facing": True, "compliance_scope": "None", "revenue_impact": "Low",
+         "rto_hours": 1, "depends_on": depends_on, "risk_appetite": "Low"}
+    )
+
+
+def test_transitive_dependents_match_expected() -> None:
+    # §7 blast radius — if these differ, the traversal direction is wrong
+    counts = transitive_dependent_counts(load_all().services)
+    assert counts["Identity Verification"] == 5
+    assert counts["Customer Login"] == 4
+    assert counts["Payment Processing"] == 1
+    assert counts["Software Delivery"] == 1
+    assert counts["Testing Platform"] == 0
+
+
+def test_transitive_dependents_cycle_terminates() -> None:
+    # a cyclic depends_on graph must terminate via the visited set, not hang
+    services = [_svc("A", "B"), _svc("B", "C"), _svc("C", "A")]
+    counts = transitive_dependent_counts(services)
+    assert counts == {"A": 2, "B": 2, "C": 2}  # each reaches the other two, not infinite
+
+
+def test_empty_depends_on_has_zero_dependents() -> None:
+    counts = transitive_dependent_counts([_svc("Lonely", None), _svc("Blank", "")])
+    assert counts["Lonely"] == 0
+    assert counts["Blank"] == 0
 
 
 def test_control_gaps_pure_function_no_mutation() -> None:
