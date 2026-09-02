@@ -1,0 +1,20 @@
+# Keep the build context minimal and — critically — keep secrets and local state
+# OUT of the image. .env must never enter the build context.
+.env
+.env.*
+.venv/
+venv/
+.git/
+.github/
+cache/
+*.egg-info/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+docs/
+tests/
+eval.py
+scored_findings.csv
+*.excalidraw

@@ -1,141 +1,300 @@
+---
+title: TawasolPay Cyber Risk Assistant
+emoji: 🛡️
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # TawasolPay Cyber Risk Assistant
 
-<!-- Stub. Section headings only (from §9 of implementation_plan.md); prose is
-     written in phase 8 in the author's voice, with real numbers from eval.py. -->
+Ranks TawasolPay's 114 open vulnerabilities into a defensible top-5 risk brief and
+cites the NIST SP 800-53 control for each. Every number is traceable to its source;
+the LLM writes the explanation sentence and nothing else — it never decides a rank,
+a score, or which control applies.
 
-## Supporting question 1 — the data split
-
-<!-- structured vs embedded; name the ambiguous cases and how they were resolved -->
-
-## Supporting question 2 — three failure modes
-
-<!-- three data-grounded failure modes, each with its concrete mitigation + file ref -->
-
-## Supporting question 3 — one thing to change
-
-**Add an asset-role signal that distinguishes pivot infrastructure from leaf services.**
-
-The scorer models business impact **per service** — criticality, customer-facing,
-compliance scope, revenue, RTO, and forward dependency fan-out. It has no notion of
-an asset's role as an *initial-access pivot*. So Remote Access / the VPN edge is
-structurally under-weighted: `customer_facing = No`, zero transitive dependents, no
-PCI/GDPR scope — a leaf, by every field the scorer reads — even though compromising
-the VPN edge is the pivot to the entire estate (it converts every internal-only
-finding into a reachable one).
-
-This is not a hypothesis; it has a **measured cost**. When the phase-7
-`exposure_model_mismatch` rule correctly promoted the public backup bucket (V-2071)
-into the top-5, the finding it displaced was Fortinet SSL-VPN RCE (CVE-2024-21762),
-which the golden set ranks #2 on exactly the pivot reasoning the scorer cannot see.
-That is one golden top-5 slot lost, quantified as **precision@5 = 0.800** (see
-`tests/test_eval.py::test_precision_at_5_is_0_8_documented_pivot_gap`). The golden
-set was deliberately **not** edited to paper over it — doing so after seeing the
-output would be tuning the benchmark to the scorer.
-
-**The fix** is a role signal (e.g. a `pivot_infrastructure` weight for perimeter /
-remote-access / identity assets) added the same disciplined way blast-radius was in
-phase 6: propose it from the data, measure the before/after against the golden set,
-and keep it only if it earns its place. It is left unbuilt here on purpose — a
-self-diagnosed, quantified limitation with a named remedy is a more honest answer
-than a re-weighting rushed in to reach a clean 1.000.
-
-<!-- (semantic intel matching as a separate confirmed/possible channel was the other
-     candidate; it is the weaker answer — no measured cost attached — so it is noted
-     but not the headline.) -->
+**Live:** the Space serves the rendered brief at `/`, with `/api/risks`,
+`/api/findings` (all 114, so you can verify nothing was truncated before scoring),
+`/traces`, and `/healthz` (real provenance — catalog version, fetch timestamps, and
+the LLM-vs-template split, not a bare `ok`).
 
 ## Architecture
 
-<!-- diagram -->
+Two data paths, kept deliberately separate — this split is the design, not decoration:
+
+- **Structured** — anything with a join key, a closed enum, or a meaningful magnitude.
+  Joined and filtered in code; scored by a deterministic, weighted rule set. *Never*
+  embedded — embedding a CVSS score or an `internet_exposed` flag destroys the very
+  ordering that makes it useful.
+- **Semantic** — the NIST control catalog *only*: unbounded prose, no join key, where
+  "Fortinet SSL-VPN unpatched, 42 days open" maps to SI-2's language by meaning, not
+  by string match. This is the one thing in the vector store.
+
+```
+ data/*.csv  (assets, vulnerabilities, threat_intel, business_services,          data/synthetic_threat_report.md
+             remediation_guidance)                                               (MDR advisory)
+        │  STRUCTURED: join keys · closed enums · magnitudes                            │
+        ▼                                                                               ▼
+  join ─► intel_match ─► control_gaps ─► campaign objectives  ◄──────── report_parser (cross-check, no merge)
+        │   (EXACT string equality on matched_cve_or_control — no fuzzy, no embeddings)
+        ▼
+  score ALL 114 findings  (deterministic; config.WEIGHTS)          CISA KEV  ──live fetch──►  kev_status
+        │                                                          (listed / not_listed / unknown), rescore
+        ▼
+  select top-5  (dedupe identical vpn-edge / load-balancer pairs BEFORE the cut)
+        │
+        ├──────────────► retrieve NIST controls ◄── Chroma (NIST CONTROLS ONLY) ◄── NIST catalog  ──live fetch──►
+        │   SEMANTIC: all-MiniLM-L6-v2, cosine                                        + all-MiniLM embeddings
+        ▼
+  guard ─► Groq LLM writes PROSE ONLY ─► explanation_source: llm | template
+        │   (rank, evidence, control already decided; a refusal degrades prose, not the ranking)
+        ▼
+  RiskBrief ─► HTML report  ·  /api/risks  ·  /api/findings (all 114)  ·  /healthz  ·  /traces
+```
+
+**Contamination invariant:** no CVSS score, no asset attribute, no vulnerability row
+ever enters Chroma. `build()` accepts `ControlRecord` and nothing else
+(`src/riskagent/rag/index.py`), and `peek()` exists to prove it.
+
+## Supporting question 1 — the data split
+
+**Structured** is everything with a join key, a closed enum, or a meaningful
+magnitude: the asset inventory, the vulnerability rows, the intel feed, the service
+map, the remediation guidance. Every query against these is a *filter* or a
+*join* — `asset_id → asset`, `matched_cve_or_control → intel`,
+`business_service → service`. Embedding any of it would be actively harmful: a CVSS
+of 9.8 vs 4.3 is an ordering, and cosine distance over an embedded "9.8" throws that
+ordering away. So the CSVs are loaded into typed Pydantic models and never touched by
+the embedder.
+
+**Embedded** is the NIST SP 800-53 catalog and nothing else. A control statement is
+unbounded prose with no join key, and the link from a finding to its control is
+semantic — "unpatched internet-facing service" *is* SI-2 / SC-7 even though those
+strings never co-occur. That is exactly what an embedding model is for, and exactly
+what a filter cannot do.
+
+**The two ambiguous cases, and how I resolved them:**
+
+- `remediation_guidance.csv` reads like prose but is keyed (by CVE / vuln type) and
+  its values are actionable strings, not a semantic-search target. I treat it as
+  **structured** — a lookup, not a corpus. Embedding it would have put non-NIST
+  content in the vector store for no retrieval benefit.
+- `threat_intelligence.summary` is free text and *tempting* to embed. I keep it
+  **structured**: the intel-to-finding link is the exact `matched_cve_or_control`
+  key, not a fuzzy summary match (see failure mode 2). The summary is shown as
+  evidence and passed to the LLM as context, but it is never a retrieval key — that
+  would reintroduce the fuzzy matching the dataset is built to punish.
+
+## Supporting question 2 — three failure modes
+
+Grounded in *this* data, each with the mitigation that exists in the code:
+
+1. **KEV false-negatives on synthetic CVEs.** ~75% of the CVE-column values are
+   synthetic (`CVE-SYN-*`, `K8S-SYN-*`, …) and absent from CISA KEV, so a naive
+   "not in KEV ⇒ not exploited" would mislabel most of the estate as safe.
+   → **Three-valued `kev_status`.** Only a *real* CVE confirmed absent from a
+   successfully-fetched catalog is `not_listed`; a synthetic id is `unknown` (not
+   checkable), never silently `false`. Coverage is reported, not assumed —
+   **25.4% (29 of 114)** on this data, the expected band for ~20 real CVEs among
+   mostly-synthetic ids. *`src/riskagent/ingest/kev.py` (`is_real_cve`, `apply_kev`).*
+2. **Fuzzy intel matching inflating a score.** Normalising or fuzzy-matching
+   `matched_cve_or_control` would attach a ransomware campaign to an unrelated
+   finding and push it up the ranking — and the feed carries **16 deliberate noise
+   records** engineered to catch exactly that.
+   → **Exact string-equality join only** — no normalisation, no case-folding, no
+   embeddings. Pinned by test: `assert matched_intel_count == 24` (and a lowercase
+   `cve-2024-21762` decoy is asserted *not* to match).
+   *`src/riskagent/pipeline/intel_match.py`; `tests/test_intel_match.py`.*
+3. **A top risk sitting on a stale or unowned asset.** A high score on a box last
+   seen 200 days ago, or with a blank `owner_team`, may point at a decommissioned
+   host — and amplifying it would send responders somewhere that no longer exists.
+   → **Staleness dampens, it never amplifies.** `stale_asset_record` / `no_owner`
+   are raised as flags that contribute **+0 points** to the score and surface in the
+   brief's `data_flags`, so the reviewer sees the caveat instead of the score hiding
+   it. *`src/riskagent/pipeline/control_gaps.py` (tags); `src/riskagent/pipeline/score.py`
+   (flag-only, zero points).*
+
+## Supporting question 3 — one thing to change
+
+**Add semantic intel matching as a second, clearly separated channel.** Today intel
+attaches to a finding by exact `matched_cve_or_control` equality — which is precise
+but blind to the intel record that describes *a technology you run* without naming a
+CVE ("threat actor X targeting Citrix NetScaler in the Gulf financial sector").
+
+The change is a **two-channel design, never merged**:
+
+- **Confirmed** — exact-key matches, exactly as today. These feed the score.
+- **Possible** — semantic matches (embed the intel summary, match against the
+  finding's software/vendor/context) surfaced as *"possibly related activity"* with
+  a similarity value, at **much lower weight**, in their own channel. They inform the
+  analyst; they do not silently move the ranking.
+
+The two are never averaged into one number, because that is precisely the fuzzy
+matching the dataset is built to punish (16 noise records). **Precision was preferred
+for v1** deliberately: an exact join that says "confirmed: 24, and here are 16
+records I refused to match" is more defensible to a reviewer than a fuzzy matcher
+that quietly inflates a score and cannot tell you why. The semantic channel is the
+principled way to recover recall *without* spending that precision — a v2 addition
+that stays honest by keeping the confirmed and possible signals visibly apart.
 
 ## Make commands
 
-<!-- make install / lint / test / run / eval -->
+| Command | What it does |
+|---|---|
+| `make install` | `pip install -e ".[dev]"` |
+| `make lint` | `ruff check .` + `mypy` (strict) |
+| `make test` | fast gate — no network, no model download (`pytest -m "not network"`) |
+| `make test-integration` | real NIST fetch + embeddings (`pytest -m network`) |
+| `make run` | `uvicorn riskagent.app:app --host 0.0.0.0 --port 7860` |
+| `make eval` | pairwise + precision@5, and the before/after blast-radius rates |
+| `make eval-retrieval` | also computes retrieval recall@3 (network + model) |
+| `make dump` | write all 114 scored findings to `scored_findings.csv` |
 
 ## Weights table
 
-<!-- weights with provenance in the MDR analyst notes -->
+Deterministic, additive, and tunable in one place (`src/riskagent/config.py::WEIGHTS`)
+so `eval.py` can sweep them. The five factor **groups and their ordering** come
+directly from the MDR report's **"Threat Intelligence Analyst Notes"** ranking rubric
+(`data/synthetic_threat_report.md`, the five numbered factors, lines 79–83) — that
+section is the scoring rubric, so it is encoded, not parsed:
+
+| # | Factor (report rubric) | Group | Max | Key terms |
+|---|---|---|---|---|
+| 1 | Internet exposure (line 79) | `exposure` | 25 | internet_exposed 18, production 7 |
+| 2 | Active exploitation (line 80) | `exploitability` | 22 | cvss×8, exploit_available 8, no_auth 4, kev_listed 2 (+ maturity, max 5) |
+| 3 | Ransomware association (line 81) | `adversary` | 25 | intel_match 8, ransomware 8, region/sector fit 2, recent 2 (+ maturity) |
+| 4 | Business criticality / scope (line 82) | `business` | 25 | customer_facing 4, PCI/GDPR 4, revenue 4, RTO tiered 5/3/1 (+ criticality) |
+| 5 | Missing compensating controls (line 83) | `control_gap` | 10 | no_edr 5, no_vendor_patch 3, days_open 2 |
+
+**One group is *not* from the report rubric:** `blast_radius` (forward dependency
+fan-out, recovery-of-last-resort, campaign objective) was **discovered through
+evaluation** in phase 6/7 — the golden set showed the scorer modelled *likelihood*
+well and *consequence* barely. It was added the disciplined way: propose from the
+data, measure the before/after against the golden set, keep only if it earns its
+place (see below). It lives in its own group so the report-derived maxima stay stable.
 
 ## Evaluation
 
-<!-- current eval numbers; one-annotator caveat on the golden set -->
+Measured by `eval.py` against a golden set of pairwise judgements and a golden top-5,
+recorded **before** the scorer's output was trusted. Current numbers:
 
-<!-- PHASE-6b MEASURED RECORD (data for phase-8 prose; one change, one eval run,
-     one recorded delta — never batched). Headline = non-contested pairwise. -->
+| Metric | Value | Notes |
+|---|---|---|
+| **pairwise_satisfaction** (primary) | **0.800** (4/5 non-contested) | the CI regression floor (`EVAL_PAIRWISE_FLOOR`) |
+| before blast-radius | 0.600 (3/5) | the "consequence was under-modelled" evidence |
+| contested (reported, not gated) | 0.167 (6 pairs) | genuinely-arguable pairs, kept out of the headline |
+| **precision@5** | **0.800** | 4 of 5 golden top-5 slots; the missing one is documented below |
+| **retrieval_recall@3** | **0.955** | an acceptable control in the top-3 for ~96% of golden queries |
 
-Headline pairwise is reported as a **fraction, not a decimal** — the denominator
-(5 non-contested pairs) is the honest sample size and belongs in view. The
-cross-phase arc is **2/5 → 3/5 → 4/5** (phase-6 pre-blast-radius → phase-6
-post-blast-radius → phase-6b).
+**Headline pairwise is a fraction, not a decimal** — the denominator (5 non-contested
+pairs) is the honest sample size and belongs in view. The cross-phase arc is
+**2/5 → 3/5 → 4/5** (phase-6 pre-blast-radius → post-blast-radius → phase-6b):
 
 | Step | Change | Headline pairwise | Δ | What moved |
 |------|--------|-------------------|---|------------|
 | baseline | phase-6 as committed | **3/5** (0.600) | — | P03, P09 fail |
-| Change 1 | `rto_hours` in Business group (P11) | **3/5** (0.600) | 0/5 | no flip; strengthens source pair P11 (+1.6→+5.6), tightens P03 (−2.4→−0.4) and P09 (−4.0→−1.0) |
-| Change 2 | recovery-infrastructure blast-radius term (P04/P09) | **4/5** (0.800) | **+1/5** | flips **P09** (−1.0→+5.0): DR-failover site scored as top-tier fan-out despite 0 dependents |
-| Change 3 | staleness decision: keep §4, retire P10 | **4/5** (0.800) | 0/5 | P10 was contested (not headline); resolves a §4-vs-golden contradiction, contested 7→6 pairs |
+| Change 1 | `rto_hours` in Business group (P11) | **3/5** (0.600) | 0/5 | no flip; P11 +1.6→+5.6, tightens P03 −2.4→−0.4, P09 −4.0→−1.0 |
+| Change 2 | recovery-infrastructure blast-radius term (P04/P09) | **4/5** (0.800) | **+1/5** | flips **P09** (−1.0→+5.0): DR site scored top-tier fan-out despite 0 dependents |
+| Change 3 | staleness decision: keep §4, retire contested P10 | **4/5** (0.800) | 0/5 | resolves a §4-vs-golden contradiction; contested 7→6 pairs |
 
-**Reading the 0/5 deltas:** a change registering 0/5 is *not* an inert change — it
-reflects a coarse metric on a 5-pair denominator, where a pair only registers when
-it crosses zero margin. Change 1 moved every margin it touched (P11 +1.6→+5.6, P03
-−2.4→−0.4, P09 −4.0→−1.0) without any of them crossing the line; Change 3 was a
-deliberate resolution of a documentation contradiction that was never expected to
-move the count. The margin column, not the fraction, is where those two show their
-work.
+A 0/5 delta is not an inert change — on a 5-pair denominator a pair only registers
+when it crosses zero margin; the margin column is where Change 1 shows its work.
 
-precision@5 held at **5/5** (1.000) across all three steps (blind: false, secondary
-— not tuned toward). CI regression floor (`config.EVAL_PAIRWISE_FLOOR`) raised
-0.6 → 0.8.
+**Why precision@5 is 0.800, not 1.000 — and why it dropped.** Through phase-6b,
+precision@5 held at 5/5. In phase 7 the `exposure_model_mismatch` rule correctly
+promoted the public backup bucket (V-2071 — reachable via the provider URL regardless
+of network path) into the top-5, and it displaced Fortinet SSL-VPN RCE
+(CVE-2024-21762), which the golden set ranks #2. That is **one golden slot traded on
+purpose**: Fortinet is the estate-wide *initial-access pivot*, but the scorer models
+business impact *per service*, so VPN-edge infrastructure (`customer_facing = No`, 0
+dependents, no PCI/GDPR) is structurally under-weighted despite a VPN compromise being
+the pivot to everything. The named remedy — an asset-role signal separating pivot
+infrastructure from leaf services — is deliberately **not built**: adding it after
+seeing the output would be tuning toward the benchmark. The number is pinned in
+`tests/test_eval.py::test_precision_at_5_is_0_8_documented_pivot_gap` so any change
+that moves it fires an alarm rather than silently editing the number.
 
-**Limitation — small denominator.** The headline rests on 5 non-contested pairs
-from a single annotator (see the golden-set caveat). Each pair is worth 0.2 (1/5),
-so the metric is coarse and one re-judged pair swings it a full step. It is
-reported this way deliberately: contested pairs were **not** promoted to the
-headline to widen the denominator, because doing so after seeing the scores would
-be selecting constraints to improve the number — the exact failure the methodology
-exists to prevent.
+**Remaining documented pairwise gap:** P03 (−0.4) — an internet-exposed finding with
+no intel loses to an internal-only finding carrying an active-exploitation ransomware
+campaign (+23 adversary). Closing it needs an "internal-only discounts a live
+campaign" signal that the phase-6b scope explicitly declined to add. An honest 0.80
+with one named gap, not an engineered 0.90.
 
-**Remaining documented gap:** P03 (−0.4) — an internet-exposed finding with no intel loses to an internal-only finding carrying an active-exploitation ransomware campaign (+23 adversary). Closing it needs an "internal-only discounts a live campaign" signal that the phase-6b scope explicitly declined to add. An honest 0.80 with one named gap, not an engineered 0.90.
+**Caveat — one annotator, small denominator.** The golden set is a single
+annotator's judgement, and the headline rests on **5 non-contested pairs**; each is
+worth 0.2, so the metric is coarse and one re-judged pair swings it a full step.
+Contested pairs were **not** promoted into the headline to widen the denominator —
+doing so after seeing the scores would be selecting constraints to improve the
+number, the exact failure the methodology exists to prevent.
 
-<!-- TODO(phase-8): blind-tier methodology sentence — "Pairs involving findings
-     already observed in scorer output are marked blind: false and reported separately,
-     since prior exposure to the ranking compromises independence." Report blind and
-     post-hoc pairwise rates separately; blind is the headline. -->
+## LLM smoke test — is the model actually contributing?
+
+The page looks identical whether the LLM writes the prose or a template does, so the
+system reports the split explicitly. `/healthz` returns `explanations_llm` and
+`explanations_template` (of the 5 top risks), and `/api/risks` carries
+`explanation_source: "llm" | "template"` per entry. **On the deployed Space, with the
+Groq key set, at least one entry reads `"llm"`.** If all five come back `"template"`,
+the Groq key or network is wrong and every explanation has silently degraded to a
+scorer-reason template — the ranking is still correct (the LLM never touched it), but
+the prose is not the model's. This split is surfaced on purpose so a reviewer sees the
+system working as designed rather than quietly degraded.
 
 ## Data freshness
 
-KEV and the NIST catalog are fetched live at startup and cached with a timestamp
-(`kev_fetched_at`, `nist_fetched_at`). A failed fetch falls back to the cache; if the
-served KEV copy is more than 7 days old the fallback is **not silent** —
-`kev_staleness_warning` flips true, surfacing on `/healthz` and as a banner in the
-rendered brief. KEV coverage on this data is ~25% of findings (measured 25.4%, 29 of
-114), the expected band given ~20 real CVEs among mostly-synthetic ids; a synthetic id
-is scored `kev_status = unknown` (not checkable), never `not_listed`.
+KEV and the NIST catalog are **fetched live at startup** and cached with a timestamp
+(`kev_fetched_at`, `nist_fetched_at`) — not bundled static copies. The NIST catalog
+version is stamped into the Chroma index at build time and its SHA-256 travels with
+it; both are checkable at `/healthz`. A failed fetch falls back to the cached copy,
+and that fallback is **not silent**: if the served KEV copy is more than 7 days old,
+`kev_staleness_warning` flips true on `/healthz` and a banner renders in the brief.
+Recency scoring uses a **fixed reference date** (`config.REFERENCE_DATE =
+2026-04-24`, the freshest intel date) so scores are reproducible and don't drift as
+the wall clock moves past this synthetic dataset.
 
-<!-- TODO(phase-8): one line — recency is scored against a FIXED reference date
-     (config.REFERENCE_DATE = 2026-04-24, the freshest intel date) for reproducibility,
-     so scores don't drift as the wall clock moves past the synthetic dataset. -->
+> The Chroma index is built during `docker build` (see `Dockerfile` +
+> `src/riskagent/prewarm.py`), so the deployed container has no cold-start embedding
+> pass. The embedding pass is what's baked; KEV and NIST are still fetched live at boot.
 
-## Intel-source contradiction detection (phase 7)
+## Intel-source contradiction detection
 
 The report parser cross-checks the MDR advisory against `threat_intelligence.csv`
 **without merging** — a disagreement between two intel sources is a finding, not a
-value to average away. Direction is report→CSV: every actor→CVE the report claims is
-corroborated by the CSV on real data (zero conflicts), while a mutated fixture trips
-the `report_cve_uncorroborated` flag. On the corroborated pairs the ransomware
-association is compared, and **WinterViper genuinely disagrees on real data** — the
-report says "Ransomware: No", CSV `TI-3023` says Yes. The CSV wins (scoring already
-reads the CSV's flag) and the disagreement is flagged `intel_ransomware_conflict` on
-the affected finding (Kong, V-2024), visible in the brief rather than silently
-resolved. Campaign objectives (ip_theft, credential_theft, payment_fraud) are derived
-from block **prose**, never the actor name, and activate the consequence term the
-scorer wired dormant in phase 6 — measured neutral on the headline pairwise (0.800 →
-0.800, it strengthens the contested supply-chain pairs it was built for).
+value to average away. On real data WinterViper genuinely disagrees: the report says
+"Ransomware: No", CSV `TI-3023` says Yes. The CSV wins (scoring already reads its
+flag) and the disagreement is flagged `intel_ransomware_conflict` on the affected
+finding (Kong, V-2024), visible in the brief rather than silently resolved.
 
 ## Observability
 
 Every pipeline run appends one JSONL record to `/traces` (last N): the six input-file
 SHA-256 hashes (a ranking is traceable to exact data bytes), the KEV join stats, the
 NIST catalog version, and per top-5 risk the full score breakdown, the cited control,
-and whether the explanation was grounded LLM prose or a template fallback. If Groq is
-unreachable the brief still renders with retrieved controls and template sentences —
-only the prose degrades, because only the prose was ever the model's job.
+and whether the explanation was grounded LLM prose or a template fallback.
+
+## Running locally
+
+```bash
+make install
+export GROQ_API_KEY=...   # optional; without it, explanations are templates
+make test                 # fast gate
+make eval                 # the numbers above
+make run                  # http://localhost:7860
+```
+
+Or with Docker (mirrors the deployed image):
+
+```bash
+docker build -t tawasolpay-risk .
+docker run -p 7860:7860 -e GROQ_API_KEY=$GROQ_API_KEY tawasolpay-risk
+```
+
+## Deployment (Hugging Face Spaces, Docker SDK)
+
+This repo *is* the Space: the frontmatter above declares `sdk: docker` and
+`app_port: 7860`. `GROQ_API_KEY` is set as a **Space secret** (Settings → Variables
+and secrets) and injected at runtime — it is never in the image, the repo, or the git
+history. A scheduled GitHub Action (`.github/workflows/keep-alive.yml`) pings
+`/healthz` every 12 hours to keep the free-tier Space warm and to fail loudly if
+`kev_staleness_warning` ever goes true.

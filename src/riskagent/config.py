@@ -48,7 +48,13 @@ NIST_CATALOG_URL = (
 NIST_CATALOG_VERSION = "SP 800-53 Rev 5"
 
 # --- LLM (§6) — writes the explanation sentence only, never a rank/score/control ---
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# The plan named llama-3.3-70b-versatile; Groq has since retired it (the API returns
+# model_not_found). qwen3.8-27b is a current general instruct model on Groq and, at
+# temperature 0, best satisfies the grounding guard (JSON shape + evidence allow-list)
+# of the models this account can reach — measured 3/5 top-risk explanations grounded,
+# the other 2 correctly falling to template. The model is swappable here; nothing else
+# depends on the name.
+GROQ_MODEL = "qwen/qwen3.8-27b"
 GROQ_TEMPERATURE = 0.0
 GROQ_TIMEOUT_S = 20.0  # per-call; an unreachable endpoint must RAISE, not hang
 LLM_STAGE_DEADLINE_S = 30.0  # outer bound on the whole 5-call stage; stragglers -> template
