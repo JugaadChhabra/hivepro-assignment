@@ -136,6 +136,10 @@ class EnrichedFinding(BaseModel):
     asset: Asset
     service: BusinessService
     intel: list[IntelRecord]  # empty list is a valid, common state
+    # Per-record relevance weight in [0,1], keyed by intel_id (phase 2). Kept
+    # deliberately SEPARATE from the match signal (which is ``bool(intel)``): a
+    # weak/low-relevance record is still a match and still counts toward the 24.
+    intel_relevance: dict[str, float] = {}
     kev: KevEntry | None = None
     kev_status: Literal["listed", "not_listed", "unknown"] = "unknown"
     control_gaps: list[str] = []
