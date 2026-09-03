@@ -1,336 +1,446 @@
 # TawasolPay Cyber Risk Assistant
 
-Ranks TawasolPay's 114 open vulnerabilities into a defensible top-5 risk brief and
-cites the NIST SP 800-53 control for each. Every number is traceable to its source;
-the LLM writes the explanation sentence and nothing else — it never decides a rank,
-a score, or which control applies.
+Ranks TawasolPay's 114 open vulnerability findings into a defensible top-5 risk brief and
+cites the NIST SP 800-53 control that applies to each. Every number in the brief traces
+back to the exact input bytes it came from. The ranking is deterministic — a weighted rule
+set decides order, score, and control; the LLM only writes the one prose sentence that
+explains a rank, and it can invent nothing the guard cannot find in the evidence.
 
-**Live:** deployed as a Docker web service on Render. It serves the rendered brief
-at `/`, with `/api/risks`, `/api/findings` (all 114, so you can verify nothing was
-truncated before scoring), `/traces`, and `/healthz` (real provenance — catalog
-version, fetch timestamps, and the LLM-vs-template split, not a bare `ok`).
+**[Live brief](https://tawasolpay-risk.onrender.com/) · [API](https://tawasolpay-risk.onrender.com/api/risks) · [Repo](https://github.com/JugaadChhabra/hivepro-assignment)**
 
-## Architecture
+The single most important design fact: **the LLM never decides a rank, a score, or which
+control applies.** Those are computed before it is called. If the model is unreachable, the
+brief still renders — only the prose degrades to a template.
 
-Two data paths, kept deliberately separate — this split is the design, not decoration:
+## 1. How it works
 
-- **Structured** — anything with a join key, a closed enum, or a meaningful magnitude.
-  Joined and filtered in code; scored by a deterministic, weighted rule set. *Never*
-  embedded — embedding a CVSS score or an `internet_exposed` flag destroys the very
-  ordering that makes it useful.
-- **Semantic** — the NIST control catalog *only*: unbounded prose, no join key, where
-  "Fortinet SSL-VPN unpatched, 42 days open" maps to SI-2's language by meaning, not
-  by string match. This is the one thing in the vector store.
+The CSVs load into typed Pydantic models and join on their keys (`asset_id`,
+`business_service`, `matched_cve_or_control`). Threat intel attaches to a finding by **exact
+string equality** on `matched_cve_or_control` — no fuzzy match, no embeddings. The MDR
+advisory is parsed separately and cross-checked against the intel CSV without merging.
+CISA KEV is fetched live and sets a three-valued `kev_status` per finding. All 114 findings
+are then scored by the deterministic weighted rule set in `config.WEIGHTS`, which produces a
+per-group breakdown (exposure, exploitability, adversary, business, control_gap,
+blast_radius) that sums to a total. The scored set is deduped (identical CVE on paired hosts
+collapses to one entry) and the top 5 are selected. Only then, for those 5, does the system
+retrieve NIST controls from a Chroma vector store (over-fetch 40, collapse control
+enhancements to their base, keep 3 distinct base controls) and call the Groq LLM five times
+to write each explanation sentence. A grounding guard validates every sentence against an
+evidence allow-list; a violation is retried once, then falls to a template. The result is a
+`RiskBrief` served as an HTML report plus four JSON routes, with one JSONL trace appended
+per run.
 
 ```
- data/*.csv  (assets, vulnerabilities, threat_intel, business_services,          data/synthetic_threat_report.md
-             remediation_guidance)                                               (MDR advisory)
-        │  STRUCTURED: join keys · closed enums · magnitudes                            │
-        ▼                                                                               ▼
-  join ─► intel_match ─► control_gaps ─► campaign objectives  ◄──────── report_parser (cross-check, no merge)
-        │   (EXACT string equality on matched_cve_or_control — no fuzzy, no embeddings)
-        ▼
-  score ALL 114 findings  (deterministic; config.WEIGHTS)          CISA KEV  ──live fetch──►  kev_status
-        │                                                          (listed / not_listed / unknown), rescore
-        ▼
-  select top-5  (dedupe identical vpn-edge / load-balancer pairs BEFORE the cut)
-        │
-        ├──────────────► retrieve NIST controls ◄── Chroma (NIST CONTROLS ONLY)
-        │   SEMANTIC: vector LOOKUP against precomputed query vectors — no model at runtime
-        ▼
+data/*.csv (assets, vulnerabilities, threat_intel,          data/synthetic_threat_report.md
+           business_services, remediation_guidance)          (MDR advisory)
+       │  STRUCTURED: join keys · closed enums · magnitudes         │
+       ▼                                                            ▼
+  join ─► intel_match ─► control_gaps ─► campaign objectives ◄── report_parser (cross-check, no merge)
+       │   (EXACT string equality on matched_cve_or_control)
+       ▼
+  score ALL 114 findings (deterministic; config.WEIGHTS)    CISA KEV ──live fetch──► kev_status
+       │                                                    (listed / not_listed / unknown), rescore
+       ▼
+  dedupe ─► select top-5
+       │
+       ├──────────► retrieve NIST controls ◄── Chroma (NIST CONTROLS ONLY)
+       │   SEMANTIC: over-fetch 40 ─► collapse enhancements to base ─► top-3 distinct
+       ▼
   guard ─► Groq LLM writes PROSE ONLY ─► explanation_source: llm | template
-        │   (rank, evidence, control already decided; a refusal degrades prose, not the ranking)
-        ▼
-  RiskBrief ─► HTML report  ·  /api/risks  ·  /api/findings (all 114)  ·  /healthz  ·  /traces
+       │   (rank, evidence, control already decided; a refusal degrades prose, not the ranking)
+       ▼
+  RiskBrief ─► HTML report · /api/risks · /api/findings (all 114) · /healthz · /traces
 
-  ── BUILD TIME (docker build, model present) ─────────────────────────────────
-  NIST catalog ──live fetch──► all-MiniLM-L6-v2 ──► Chroma index + per-finding
-                                                    query-vector pack (shipped in image)
+  ── BUILD TIME (docker build, embedding model present) ──────────────────────────
+  NIST catalog ──live fetch──► all-MiniLM-L6-v2 ──► Chroma index (1189 controls)
+                                                  + per-finding query-vector pack
 ```
 
-**Contamination invariant:** no CVSS score, no asset attribute, no vulnerability row
-ever enters Chroma. `build()` accepts `ControlRecord` and nothing else
-(`src/riskagent/rag/index.py`), and `peek()` exists to prove it.
+![Architecture](docs/architecture.png)
 
-## Supporting question 1 — the data split
+*All 114 findings are scored and the top-5 controls retrieved **before** any LLM call. The
+five LLM calls happen at the very end, on output whose rank, score, evidence, and control
+are already fixed. The diagram is not a streaming pipeline — the model writes captions for a
+decision that is already made.*
 
-**Structured** is everything with a join key, a closed enum, or a meaningful
-magnitude: the asset inventory, the vulnerability rows, the intel feed, the service
-map, the remediation guidance. Every query against these is a *filter* or a
-*join* — `asset_id → asset`, `matched_cve_or_control → intel`,
-`business_service → service`. Embedding any of it would be actively harmful: a CVSS
-of 9.8 vs 4.3 is an ordering, and cosine distance over an embedded "9.8" throws that
-ordering away. So the CSVs are loaded into typed Pydantic models and never touched by
-the embedder.
+## 2. Sample output
 
-**Embedded** is the NIST SP 800-53 catalog and nothing else. A control statement is
-unbounded prose with no join key, and the link from a finding to its control is
-semantic — "unpatched internet-facing service" *is* SI-2 / SC-7 even though those
-strings never co-occur. That is exactly what an embedding model is for, and exactly
-what a filter cannot do.
+The real rendered brief for risk #1, copied from `render_markdown` on a live run (the prose
+sentence is LLM-written and varies run to run; the rank, evidence, and control are
+deterministic):
 
-**The two ambiguous cases, and how I resolved them:**
+```markdown
+## #1 — Citrix ADC Session Token Leak (CitrixBleed)
 
-- `remediation_guidance.csv` reads like prose but is keyed (by CVE / vuln type) and
-  its values are actionable strings, not a semantic-search target. I treat it as
-  **structured** — a lookup, not a corpus. Embedding it would have put non-NIST
-  content in the vector store for no retrieval benefit.
-- `threat_intelligence.summary` is free text and *tempting* to embed. I keep it
-  **structured**: the intel-to-finding link is the exact `matched_cve_or_control`
-  key, not a fuzzy summary match (see failure mode 2). The summary is shown as
-  evidence and passed to the LLM as context, but it is never a retrieval key — that
-  would reintroduce the fuzzy matching the dataset is built to punish.
+- **Assets:** load-balancer-prod-01, load-balancer-prod-02 · **Service:** Customer Login (Chief Digital Officer, RTO 1h)
+- _highest-severity instance shown; affects 2 assets across Production._
+- **Evidence:** CVE-2023-4966 · CVSS 9.4 · internet-facing · exploit available · no auth required · 180 days open · EDR absent
+- **Threat:** IronVeil "CitrixBleed Exploitation" — ransomware, High confidence, Global
+- **Control:** SI-4 Device Identification and Authentication, particularly IA-3(2), IA-3(1) — The system must monitor for attacks and unauthorized connections, analyze detected events, and adjust monitoring activity based on changes in risk to organizational operations.
+- **Also applies:** SI-3 Malicious Code Protection — no EDR installed on this host
+- **Also applies:** SI-4 System Monitoring — no EDR installed on this host
+- **Why this ranks #1:** This finding holds rank 1 because the internet-facing production load balancers are vulnerable to an unauthenticated exploit with a CVSS of 9.4 that is actively being exploited by the IronVeil actor in a ransomware campaign. The absence of EDR agents and the criticality of the customer-facing login service with a 1-hour RTO further elevate the risk score to 106.52.
+```
 
-## Supporting question 2 — three failure modes
+The full top-5 (live, KEV applied):
 
-Grounded in *this* data, each with the mitigation that exists in the code:
+| # | CVE | Finding | Asset | Service | Score |
+|---|-----|---------|-------|---------|------:|
+| 1 | CVE-2023-4966 | Citrix ADC Session Token Leak (CitrixBleed) | load-balancer-prod-01/02 | Customer Login | 106.52 |
+| 2 | CVE-SYN-2026-0010 | Payment API Insecure Direct Object Reference | payment-api-prod-01 | Payment Processing | 97.28 |
+| 3 | CVE-SYN-2026-0011 | Kong Gateway Admin API Exposed | partner-api-gateway-prod | Partner API Gateway | 96.44 |
+| 4 | CLOUD-SYN-001 | Storage Bucket Public Policy Misconfiguration | backup-storage-prod | Backup and Recovery | 95.28 |
+| 5 | CVE-SYN-2026-0001 | Remote Code Execution in Web Framework | auth-gateway-prod-01 | Customer Login | 92.84 |
 
-1. **KEV false-negatives on synthetic CVEs.** ~75% of the CVE-column values are
-   synthetic (`CVE-SYN-*`, `K8S-SYN-*`, …) and absent from CISA KEV, so a naive
-   "not in KEV ⇒ not exploited" would mislabel most of the estate as safe.
-   → **Three-valued `kev_status`.** Only a *real* CVE confirmed absent from a
-   successfully-fetched catalog is `not_listed`; a synthetic id is `unknown` (not
-   checkable), never silently `false`. Coverage is reported, not assumed —
-   **25.4% (29 of 114)** on this data, the expected band for ~20 real CVEs among
-   mostly-synthetic ids. *`src/riskagent/ingest/kev.py` (`is_real_cve`, `apply_kev`).*
-2. **Fuzzy intel matching inflating a score.** Normalising or fuzzy-matching
-   `matched_cve_or_control` would attach a ransomware campaign to an unrelated
-   finding and push it up the ranking — and the feed carries **16 deliberate noise
-   records** engineered to catch exactly that.
-   → **Exact string-equality join only** — no normalisation, no case-folding, no
-   embeddings. Pinned by test: `assert matched_intel_count == 24` (and a lowercase
-   `cve-2024-21762` decoy is asserted *not* to match).
-   *`src/riskagent/pipeline/intel_match.py`; `tests/test_intel_match.py`.*
-3. **A top risk sitting on a stale or unowned asset.** A high score on a box last
-   seen 200 days ago, or with a blank `owner_team`, may point at a decommissioned
-   host — and amplifying it would send responders somewhere that no longer exists.
-   → **Staleness dampens, it never amplifies.** `stale_asset_record` / `no_owner`
-   are raised as flags that contribute **+0 points** to the score and surface in the
-   brief's `data_flags`, so the reviewer sees the caveat instead of the score hiding
-   it. *`src/riskagent/pipeline/control_gaps.py` (tags); `src/riskagent/pipeline/score.py`
-   (flag-only, zero points).*
+**Requirement mapping.** The assignment asks each risk to surface the asset, the
+vulnerability, matched threat intelligence, the business service, and a plain-English
+explanation. In the brief above: **asset** is the `Assets:` line (`affected_assets`);
+**vulnerability** is the heading plus the `Evidence:` line (CVE, CVSS, exposure, exploit,
+auth, days-open, EDR); **matched threat intelligence** is the `Threat:` line
+(`threat_summary`, built only from intel that matched by exact key); **business service** is
+the `Service:` field with owner and RTO; the **plain-English explanation** is the `Why this
+ranks #N:` sentence (`why_ranked`), grounded LLM prose or a template.
 
-## Supporting question 3 — one thing to change
+## 3. The data split (supporting question 1)
 
-**Add semantic intel matching as a second, clearly separated channel.** Today intel
-attaches to a finding by exact `matched_cve_or_control` equality — which is precise
-but blind to the intel record that describes *a technology you run* without naming a
-CVE ("threat actor X targeting Citrix NetScaler in the Gulf financial sector").
+**Structured** is everything with a join key, a closed enum, or a meaningful magnitude: the
+asset inventory (60 rows), the vulnerability rows (114), the intel feed (40), the service map
+(20), the remediation guidance (30). Every query against these is a filter or a join —
+`asset_id → asset`, `matched_cve_or_control → intel`, `business_service → service`. I never
+embed any of it, because embedding destroys ordering: a CVSS of 9.8 versus 4.3 is a rank, and
+cosine distance over an embedded "9.8" throws that rank away. So these load into typed models
+and the embedder never touches them.
 
-The change is a **two-channel design, never merged**:
+**Embedded** is the NIST SP 800-53 catalog and nothing else — 1189 control statements. A
+control statement is unbounded prose with no join key, and the link from a finding to its
+control is semantic: "unpatched internet-facing service" *is* SI-2 / SC-7 even though those
+strings never co-occur. That is what an embedding model is for and what a filter cannot do.
+This is the whole contents of the vector store.
 
-- **Confirmed** — exact-key matches, exactly as today. These feed the score.
-- **Possible** — semantic matches (embed the intel summary, match against the
-  finding's software/vendor/context) surfaced as *"possibly related activity"* with
-  a similarity value, at **much lower weight**, in their own channel. They inform the
-  analyst; they do not silently move the ranking.
+**The ambiguous cases, and how I resolved them:**
 
-The two are never averaged into one number, because that is precisely the fuzzy
-matching the dataset is built to punish (16 noise records). **Precision was preferred
-for v1** deliberately: an exact join that says "confirmed: 24, and here are 16
-records I refused to match" is more defensible to a reviewer than a fuzzy matcher
-that quietly inflates a score and cannot tell you why. The semantic channel is the
-principled way to recover recall *without* spending that precision — a v2 addition
-that stays honest by keeping the confirmed and possible signals visibly apart.
+- **`remediation_guidance.csv`** reads like prose and has no clean join key. I treated it as
+  **structured** — a lookup resolved with hand-verified keyword rules, not a corpus. With only
+  30 rows I could check the keyword mapping exhaustively by hand, which is more auditable than
+  a fuzzy match. Embedding it would have put non-NIST content in the vector store for no
+  retrieval benefit.
+- **`threat_intelligence.summary`** is free text and tempting to embed. I kept it
+  **structured and displayed, not queried**: the intel-to-finding link is the exact
+  `matched_cve_or_control` key. The summary is shown as evidence and passed to the LLM as
+  context, but it is never a retrieval key — that would reintroduce the fuzzy matching the
+  dataset is built to punish (see §8, failure mode 1).
+- **The MDR report** (`synthetic_threat_report.md`) is two documents in one file. Five
+  campaign blocks are structured records wearing prose clothing (target profile, exploit
+  chain, ransomware yes/no, confidence) — parsed by `report_parser` and cross-checked against
+  the intel CSV. The "Threat Intelligence Analyst Notes" section is not data at all: it is the
+  scoring rubric. I encoded it as weights (see §4) rather than parsing it.
 
-## Make commands
+## 4. Scoring — how the weights were set
 
-| Command | What it does |
-|---|---|
-| `make install` | `pip install -e ".[dev]"` |
-| `make lint` | `ruff check .` + `mypy` (strict) |
-| `make test` | fast gate — no network, no model download (`pytest -m "not network"`) |
-| `make test-integration` | real NIST fetch + embeddings (`pytest -m network`) |
-| `make run` | `uvicorn riskagent.app:app --host 0.0.0.0 --port 7860` |
-| `make eval` | pairwise + precision@5, and the before/after blast-radius rates |
-| `make eval-retrieval` | also computes retrieval recall@3 (network + model) |
-| `make dump` | write all 114 scored findings to `scored_findings.csv` |
+The weights are **ordinal, not empirical.** They encode a stated priority order; they are not
+measured coefficients fit to an answer. They live in `src/riskagent/config.py::WEIGHTS` as a
+plain nested dict so `eval.py` can sweep them.
 
-## Weights table
+**Provenance.** The MDR report's "Threat Intelligence Analyst Notes" lists five factors *in
+priority order* (`data/synthetic_threat_report.md`, lines 79–83). Those five became the five
+scoring groups. The source comment carrying this mapping is the module docstring at the top of
+`config.py` (it cites each factor and its line number).
 
-Deterministic, additive, and tunable in one place (`src/riskagent/config.py::WEIGHTS`)
-so `eval.py` can sweep them. The five factor **groups and their ordering** come
-directly from the MDR report's **"Threat Intelligence Analyst Notes"** ranking rubric
-(`data/synthetic_threat_report.md`, the five numbered factors, lines 79–83) — that
-section is the scoring rubric, so it is encoded, not parsed:
+| # | Factor (report rubric, lines 79–83) | Group | Group max | Key terms |
+|---|---|---|---:|---|
+| 1 | Internet exposure | `exposure` | 25 | internet_exposed 18, production 7 |
+| 2 | Active exploitation in the wild | `exploitability` | 22 | cvss×8, exploit_available 8, no_auth 4, kev_listed 2 (+ maturity ≤5) |
+| 3 | Ransomware association | `adversary` | 25 | intel_match 8, ransomware 8, region/sector fit 2, recent 2 (+ maturity) |
+| 4 | Business criticality / compliance scope | `business` | 25 | customer_facing 4, PCI/GDPR 4, revenue 4, RTO tiered 5/3/1 (+ criticality) |
+| 5 | Missing compensating controls | `control_gap` | 10 | no_edr 5, no_vendor_patch 3, days_open 2 |
 
-| # | Factor (report rubric) | Group | Max | Key terms |
-|---|---|---|---|---|
-| 1 | Internet exposure (line 79) | `exposure` | 25 | internet_exposed 18, production 7 |
-| 2 | Active exploitation (line 80) | `exploitability` | 22 | cvss×8, exploit_available 8, no_auth 4, kev_listed 2 (+ maturity, max 5) |
-| 3 | Ransomware association (line 81) | `adversary` | 25 | intel_match 8, ransomware 8, region/sector fit 2, recent 2 (+ maturity) |
-| 4 | Business criticality / scope (line 82) | `business` | 25 | customer_facing 4, PCI/GDPR 4, revenue 4, RTO tiered 5/3/1 (+ criticality) |
-| 5 | Missing compensating controls (line 83) | `control_gap` | 10 | no_edr 5, no_vendor_patch 3, days_open 2 |
+**Weights that came from measurement, not from the report.** Three signals were not in the
+rubric. They were surfaced by hand-ranking findings and by the golden set (§5), and each is
+tied to a specific constraint or annotation:
 
-**One group is *not* from the report rubric:** `blast_radius` (forward dependency
-fan-out, recovery-of-last-resort, campaign objective) was **discovered through
-evaluation** in phase 6/7 — the golden set showed the scorer modelled *likelihood*
-well and *consequence* barely. It was added the disciplined way: propose from the
-data, measure the before/after against the golden set, keep only if it earns its
-place (see below). It lives in its own group so the report-derived maxima stay stable.
+- **`transitive_dependents` (blast_radius group).** The golden set showed the scorer modelled
+  *likelihood* well and *consequence* barely. Forward dependency fan-out was added as its own
+  group so the five report-derived group maxima stay stable. Points: `dependents_high` 6
+  (≥3 dependents), `dependents_low` 3.
+- **`recovery_infrastructure` (blast_radius group).** Golden constraints **P04** and **P09**
+  surfaced it: Backup and Recovery has *zero* forward dependents, so `transitive_dependents`
+  scored it down, yet losing it turns recoverable ransomware into a catastrophe. It is a
+  deliberate, visible hardcode (`RECOVERY_SERVICES` in `config.py`) because no data field
+  encodes "recovery of last resort" — the environment enum has a `DR` value that no asset row
+  uses. Scored equal to top-tier fan-out (6).
+- **`rto_hours` (business group).** Golden constraint **P11**: the business stating downtime
+  tolerance in numbers is harder evidence than the revenue enum. Tiered, not linear
+  (`rto_le_1h` 5, `rto_le_4h` 3, `rto_le_12h` 1; >12h scores 0), kept alongside
+  `revenue_impact` because money-lost and downtime-tolerated are distinct axes.
 
-## Evaluation
+## 5. Evaluation
 
-Measured by `eval.py` against a golden set of pairwise judgements and a golden top-5,
-recorded **before** the scorer's output was trusted. Current numbers:
+**Method first.** The golden set (`tests/golden/golden_set.yaml`) was hand-built *before* the
+scorer's output was trusted. It records **pairwise constraints** ("A should outrank B")
+rather than a full ordering, because I can be honestly confident about a pairwise call where
+I cannot be confident about a full ranking. Contamination is tracked explicitly as a `blind`
+field per pair (`blind: true` = drawn from findings not yet seen ranked; `blind: false` =
+prior exposure). Contested pairs — genuinely arguable — are recorded with the counterargument
+preserved and reported separately, never mixed into the headline.
+
+**Numbers** (reproduce with `make eval` and `make eval-retrieval`):
 
 | Metric | Value | Notes |
 |---|---|---|
-| **pairwise_satisfaction** (primary) | **0.800** (4/5 non-contested) | the CI regression floor (`EVAL_PAIRWISE_FLOOR`) |
-| before blast-radius | 0.600 (3/5) | the "consequence was under-modelled" evidence |
-| contested (reported, not gated) | 0.167 (6 pairs) | genuinely-arguable pairs, kept out of the headline |
-| **precision@5** | **0.800** | 4 of 5 golden top-5 slots; the missing one is documented below |
-| **retrieval_recall@3** | **0.955** | an acceptable control in the top-3 for ~96% of golden queries |
+| pairwise_satisfaction (primary) | **4/5** (0.800) | non-contested pairs; the CI regression floor |
+| before blast_radius | 3/5 (0.600) | the "consequence was under-modelled" evidence |
+| contested (reported, not gated) | 0.167 (6 pairs) | arguable pairs, kept out of the headline |
+| precision@5 | **0.800** (4 of 5) | `blind: false` — the top-5 was seen |
+| retrieval_recall@3 | **0.955** (21 of 22) | an acceptable control in the top-3 for 21/22 golden queries |
 
-**Headline pairwise is a fraction, not a decimal** — the denominator (5 non-contested
-pairs) is the honest sample size and belongs in view. The cross-phase arc is
-**2/5 → 3/5 → 4/5** (phase-6 pre-blast-radius → post-blast-radius → phase-6b):
+The headline is a **fraction, 4/5, not a bare 0.800** — the denominator is five pairs, and
+hiding that would overstate the sample.
 
-| Step | Change | Headline pairwise | Δ | What moved |
-|------|--------|-------------------|---|------------|
-| baseline | phase-6 as committed | **3/5** (0.600) | — | P03, P09 fail |
-| Change 1 | `rto_hours` in Business group (P11) | **3/5** (0.600) | 0/5 | no flip; P11 +1.6→+5.6, tightens P03 −2.4→−0.4, P09 −4.0→−1.0 |
-| Change 2 | recovery-infrastructure blast-radius term (P04/P09) | **4/5** (0.800) | **+1/5** | flips **P09** (−1.0→+5.0): DR site scored top-tier fan-out despite 0 dependents |
-| Change 3 | staleness decision: keep §4, retire contested P10 | **4/5** (0.800) | 0/5 | resolves a §4-vs-golden contradiction; contested 7→6 pairs |
+**The arc, fully measured.** Zeroing the `rto` tiers and the `blast_radius` group reproduces
+the earlier scorer; adding them back one at a time gives **2/5 → 3/5 → 4/5**:
 
-A 0/5 delta is not an inert change — on a 5-pair denominator a pair only registers
-when it crosses zero margin; the margin column is where Change 1 shows its work.
+| Step | Change | Pairwise | Δ | What moved (margin) |
+|---|---|---:|---:|---|
+| baseline | rto + blast_radius zeroed | 2/5 | — | P01, P04 pass; P03, P09, P11 fail |
+| +rto_hours | Business RTO tiers (P11) | 3/5 | +1/5 | flips **P11** (−1.4 → +2.6); *also* narrows P03 (−2.4 → −0.4) and P09 (−4.0 → −1.0) without flipping them |
+| +blast_radius | recovery_infrastructure term (P09) | 4/5 | +1/5 | flips **P09** (−1.0 → +5.0): the DR bucket scored top-tier fan-out despite 0 dependents |
 
-**Why precision@5 is 0.800, not 1.000 — and why it dropped.** Through phase-6b,
-precision@5 held at 5/5. In phase 7 the `exposure_model_mismatch` rule correctly
-promoted the public backup bucket (V-2071 — reachable via the provider URL regardless
-of network path) into the top-5, and it displaced Fortinet SSL-VPN RCE
-(CVE-2024-21762), which the golden set ranks #2. That is **one golden slot traded on
-purpose**: Fortinet is the estate-wide *initial-access pivot*, but the scorer models
-business impact *per service*, so VPN-edge infrastructure (`customer_facing = No`, 0
-dependents, no PCI/GDPR) is structurally under-weighted despite a VPN compromise being
-the pivot to everything. The named remedy — an asset-role signal separating pivot
-infrastructure from leaf services — is deliberately **not built**: adding it after
-seeing the output would be tuning toward the benchmark. The number is pinned in
-`tests/test_eval.py::test_precision_at_5_is_0_8_documented_pivot_gap` so any change
-that moves it fires an alarm rather than silently editing the number.
+The rto step shows why a 0/5 fraction delta is not an inert change: on a five-pair
+denominator a pair only registers when its margin crosses zero, and the rto change moved
+P03's margin +2.0 and P09's +3.0 — real work in the margin — while flipping only P11 in the
+fraction. Those margin moves set up the next step.
 
-**Remaining documented pairwise gap:** P03 (−0.4) — an internet-exposed finding with
-no intel loses to an internal-only finding carrying an active-exploitation ransomware
-campaign (+23 adversary). Closing it needs an "internal-only discounts a live
-campaign" signal that the phase-6b scope explicitly declined to add. An honest 0.80
-with one named gap, not an engineered 0.90.
+**What still fails, and why.** **P03** never flips (margin −0.4): an internet-exposed finding
+with no intel (V-2052) loses to an internal-only finding carrying an active-exploitation
+ransomware campaign (V-2053). The scorer is additive — groups sum independently — and cannot
+express the interaction "an active campaign against an unreachable asset should be
+discounted." There is no representation for that in a model where groups sum, so I did not
+bury it: it is the documented gap, pinned by `EVAL_PAIRWISE_FLOOR = 0.8` in `config.py`.
 
-**Caveat — one annotator, small denominator.** The golden set is a single
-annotator's judgement, and the headline rests on **5 non-contested pairs**; each is
-worth 0.2, so the metric is coarse and one re-judged pair swings it a full step.
-Contested pairs were **not** promoted into the headline to widen the denominator —
-doing so after seeing the scores would be selecting constraints to improve the
-number, the exact failure the methodology exists to prevent.
+**Caveats, stated.** Single annotator. The headline rests on five non-contested pairs — each
+worth 0.2, so the metric is coarse and one re-judged pair swings it a full step. precision@5
+is `blind: false` (the top-5 was seen before scoring, so it is a weaker signal than the blind
+pairwise). Contested pairs were **not** promoted into the headline to widen the denominator:
+selecting constraints after seeing scores is exactly the failure the method exists to
+prevent.
 
-## LLM smoke test — is the model actually contributing?
+## 6. Design decisions
 
-The page looks identical whether the LLM writes the prose or a template does, so the
-system reports the split explicitly. `/healthz` returns `explanations_llm` and
-`explanations_template` (of the 5 top risks), and `/api/risks` carries
-`explanation_source: "llm" | "template"` per entry. **On the deployed service, with
-the Groq key set, at least one entry reads `"llm"`** (measured: 4 of 5 grounded, 1
-template). If all five come back `"template"`,
-the Groq key or network is wrong and every explanation has silently degraded to a
-scorer-reason template — the ranking is still correct (the LLM never touched it), but
-the prose is not the model's. This split is surfaced on purpose so a reviewer sees the
-system working as designed rather than quietly degraded.
+**Deterministic scoring, not LLM ranking.** The scorer already reads every signal the LLM
+would — CVSS, exposure, intel, RTO, dependents. Handing ranking to the model would add
+non-determinism without adding information, and make a rank impossible to trace to bytes. So
+the model writes prose and touches nothing else.
 
-## Data freshness
+**Exact-key intel matching only.** Intel attaches by exact string equality on
+`matched_cve_or_control` — no case-folding, no normalisation, no embeddings. The feed carries
+**16 deliberate noise records** engineered to catch a fuzzy matcher; only **24** of the 40
+records match a finding. The 24/16 split is a regression test:
+`tests/test_intel_match.py` asserts `matched_intel_count == 24`, and a lowercase
+`cve-2024-21762` decoy is asserted *not* to match.
 
-**KEV is fetched live at startup** and cached with a timestamp (`kev_fetched_at`) —
-not a bundled static copy. A failed fetch falls back to the cached copy, and that
-fallback is **not silent**: if the served KEV copy is more than 7 days old,
-`kev_staleness_warning` flips true on `/healthz` and a banner renders in the brief.
+**Two-channel evidence, used three times.** I never merge two kinds of evidence into one
+number. (1) Intel: exact-key confirmed matches feed the score; semantic "possibly related"
+would be a separate, lower-weight channel (not built — §7). (2) Controls: retrieved NIST
+chunks and rule-derived `gap_controls` are carried in separate fields. (3) Exposure:
+inventory `internet_exposed` and the `exposure_model_mismatch` flag are both surfaced; the
+flag never overwrites the source value.
 
-**The NIST catalog is pinned at build time.** It is fetched live during `docker
-build`, embedded into the Chroma index, and its version + SHA-256 are stamped into
-the index and surfaced at `/healthz`. At runtime the deployed service reads the
-*baked* catalog (so `nist_fetched_at` reflects the build), because the embedding
-model is not present at runtime and a newer catalog could not be re-embedded — see
-the deployment tradeoff below. This is a deliberate consequence of the model-free
-runtime, not a freshness regression: the version and hash are always visible and a
-redeploy re-fetches. (Locally, without the data pack, NIST is still fetched live at
-startup and embedded on demand.)
+**Collapse-to-base retrieval.** Retrieval over-fetches 40 candidates, then collapses control
+enhancements (e.g. SI-2(5)) to their base control (SI-2) so the top-3 are three *distinct*
+base controls, not one control's enhancements. The matched enhancement IDs are carried
+alongside the base and shown ("particularly IA-3(2), IA-3(1)").
 
-Recency scoring uses a **fixed reference date** (`config.REFERENCE_DATE =
-2026-04-24`, the freshest intel date) so scores are reproducible and don't drift as
-the wall clock moves past this synthetic dataset.
+**Dedupe before truncating.** Without dedup the CitrixBleed finding (CVE-2023-4966) occupies
+two of the five slots — load-balancer-prod-01 and load-balancer-prod-02, scoring 104.5 and
+101.5 offline — and pushes a distinct finding out. Dedup collapses them into one entry
+covering both assets, freeing the fifth slot for a different finding.
 
-**Ephemeral filesystem.** Render's disk is ephemeral, which is fine here: the Chroma
-index and query pack live in the *image*, not in a runtime write. `cache/kev.json`
-and `cache/traces.jsonl` are lost on every restart — acceptable by design, because
-KEV re-fetches on startup and traces are per-run observability, not durable state.
+**The guard is a real control, not a prompt suffix.** Every LLM sentence is validated against
+an evidence allow-list: CVE-shaped tokens must appear verbatim in the evidence block, numbers
+must be exact-token matches (so "8" fails when evidence says "8.1"), cited control IDs must be
+in the retrieved set, and adversary claims are rejected when no intel matched. A violation is
+retried once with the violations appended; a second failure falls to a template.
 
-## Intel-source contradiction detection
+**Embedding at build time only.** `sentence-transformers`/`torch` are build- and dev-only
+extras in `pyproject.toml`, never runtime dependencies. `docker build` embeds the catalog and
+precomputes one query vector per finding into `cache/query_embeddings.json`; the deployed
+service loads that pack and runs retrieval as a vector lookup, with no model in memory.
 
-The report parser cross-checks the MDR advisory against `threat_intelligence.csv`
-**without merging** — a disagreement between two intel sources is a finding, not a
-value to average away. On real data WinterViper genuinely disagrees: the report says
-"Ransomware: No", CSV `TI-3023` says Yes. The CSV wins (scoring already reads its
-flag) and the disagreement is flagged `intel_ransomware_conflict` on the affected
-finding (Kong, V-2024), visible in the brief rather than silently resolved.
+## 7. What I considered and rejected
 
-## Observability
+1. **LLM re-ranks the top-N** — rejected: the model has no signal the scorer lacks, so it
+   trades traceability for nothing.
+2. **Fuzzy / normalised intel matching** — rejected: it attaches unrelated campaigns and the
+   16 noise records exist to punish exactly this.
+3. **Embedding the intel summaries** — rejected: it makes matching semantic, which is the
+   fuzzy failure again; kept as displayed evidence instead.
+4. **Semantic intel as a second channel** — deferred, not rejected on principle: it is the
+   honest way to recover recall, but only if kept visibly separate from confirmed matches.
+   Out of scope for v1.
+5. **Hybrid BM25 + RRF retrieval** — rejected **on a measurement**: I set a recall@3
+   threshold of 0.8 *before* measuring; retrieval recall@3 came in at **0.955**, above the
+   threshold, so the added complexity was not justified.
 
-Every pipeline run appends one JSONL record to `/traces` (last N): the six input-file
-SHA-256 hashes (a ranking is traceable to exact data bytes), the KEV join stats, the
-NIST catalog version, and per top-5 risk the full score breakdown, the cited control,
-and whether the explanation was grounded LLM prose or a template fallback.
+## 8. Where it goes wrong (supporting question 2)
 
-## Running locally
+Three failure modes grounded in *this* dataset, each with the mitigation that exists in code.
 
-```bash
-make install
-export GROQ_API_KEY=...   # optional; without it, explanations are templates
-make test                 # fast gate
-make eval                 # the numbers above
-make run                  # http://localhost:7860
+**1. KEV false-negatives on synthetic CVEs.** 74 of 114 findings (64.9%) carry synthetic CVE
+ids (`CVE-SYN-*`, `CLOUD-SYN-*`, `K8S-SYN-*`) that are absent from CISA KEV; with the 11 real
+CVEs that KEV does not list, **85 of 114 (74.6%) carry no KEV listing**. A naive "not in KEV ⇒
+not exploited" would mislabel most of the estate as safe. → **Three-valued `kev_status`**: a
+synthetic id is `unknown` (never silently `not_listed`), only a real CVE confirmed absent from
+a fetched catalog is `not_listed`, and coverage is reported not assumed — **25.4% (29 of
+114)** listed on this data. A test asserts the band is neither 0 nor 100 (both mean a broken
+join): `tests/test_kev.py::test_live_kev_coverage_in_band`. *`src/riskagent/ingest/kev.py`.*
+
+**2. The exposure model is wrong for object storage.** Network-perimeter exposure is the wrong
+model for cloud object storage: a public bucket policy is reachable via the provider URL
+regardless of network position, but the inventory records the asset as internal-only for want
+of a route. → **`exposure_model_mismatch`**: when an internal-only asset is object storage
+*and* carries a public/permissive policy, the flag is raised and exposure is scored as
+reachable **without mutating `internet_exposed`** — both facts survive. It fires on exactly
+**one** finding here (V-2071, the backup bucket), surfaces in the rendered brief, and is
+asserted in tests. *`src/riskagent/pipeline/join.py`, `config.py` (`OBJECT_STORAGE_TOKENS`).*
+
+**3. Single-label finding classification.** A host that is both unpatched and unmonitored
+classifies under one primary `finding_type`, so retrieval would return the patching control
+and never the monitoring one. On this data the classifier assigns `missing_edr` as the
+primary type to **16** findings. → **Family union**: retrieval takes the union of control
+families across `control_gaps`, and the rule-derived `gap_controls` channel surfaces the
+monitoring control (SI-3 / SI-4) even when the primary type points elsewhere.
+*`src/riskagent/rag/families.py`, `src/riskagent/pipeline/control_gaps.py`.*
+
+**The guard firing, then the retry succeeding** — the real `enforce()` loop, exercised with a
+model scripted to hallucinate once then correct (the guard code is real; only the model
+responses are controlled, so the reject → retry → accept path is genuine):
+
+```
+[guard] model called (attempt 1)
+[guard] model called (RETRY — violations appended to prompt)
+[guard] attempt 1 REJECTED :: control_id 'SI-2(9)' not in retrieved set; number '7.5' not grounded in evidence
+[guard] final explanation_source = llm  (control cited: SI-2)
 ```
 
-Or with Docker (mirrors the deployed image):
+## 9. Data defects found
+
+- **Four columns the first scoring model ignored,** surfaced by hand-ranking against the
+  golden set: `depends_on` (→ transitive_dependents / blast_radius), `business_impact`,
+  `rto_hours`, and cross-finding host context (two findings on one host). The first three
+  became weights (§4).
+- **The WinterViper contradiction.** `threat_intelligence.csv` (TI-3023) says
+  `ransomware_association = Yes`; the MDR report's WinterViper block says "Ransomware: No —
+  financial fraud and data theft focused." The CSV wins per a stated rule (scoring reads its
+  flag), and the disagreement is flagged `intel_ransomware_conflict` on the affected finding
+  (Kong, V-2024), visible in the brief rather than averaged away.
+- **The EDR denominators reconcile, but differ.** The classifier tags **16** findings with the
+  `missing_edr` primary type; there are **26** assets without EDR in the inventory (and the
+  `no_edr` control-gap flag, which is broader than the primary type, appears on 48 findings).
+  Different denominators, all correct — worth stating so the numbers reconcile.
+
+## 10. One thing I would change (supporting question 3)
+
+Lead with the measurement: the missed golden slot is **precision@5 = 0.800**, and the finding
+it drops is Fortinet SSL-VPN RCE (CVE-2024-21762), which the golden set ranks #2. The scorer
+models business impact *per service*, so the VPN edge (`customer_facing = No`, 0 dependents,
+no PCI/GDPR) is structurally under-weighted — even though a VPN compromise is the
+initial-access pivot into the whole estate. The remedy is an **asset-role signal** that
+distinguishes pivot infrastructure from leaf services. I did not build it: it was discovered
+late, and there is no clean structured field to derive it from, so building it would mean
+hardcoding an asset-type judgement rather than deriving one — and adding it after seeing the
+output would be tuning toward the benchmark. A quantified self-diagnosis with a named remedy
+beats a feature I did not ship.
+
+## 11. Verify this yourself
+
+Three commands, each proving one claim:
+
+```bash
+make eval
+#   pairwise_satisfaction (primary): 0.800  (4/5 non-contested)
+#     before blast radius:           0.600  (3/5)
+#     contested (reported, not gated): 0.167  (6 pairs)
+#   precision_at_5:                  0.800
+
+curl -s https://tawasolpay-risk.onrender.com/api/findings | jq length
+#   114  — all findings served; nothing truncated before scoring
+
+curl -s https://tawasolpay-risk.onrender.com/healthz | jq
+#   real fetch timestamps (kev_fetched_at, nist_fetched_at) prove retrieval is
+#   live-fetched, not hardcoded; explanations_llm/​_template shows the model contributing
+```
+
+## 12. Run it locally
+
+Prerequisites: Python 3.12+.
+
+```bash
+git clone https://github.com/JugaadChhabra/hivepro-assignment.git
+cd hivepro-assignment
+make install                    # pip install -e ".[dev]"
+export GROQ_API_KEY=...          # optional; without it, explanations are templates
+make eval                       # the pairwise + precision numbers above (no network)
+make eval-retrieval             # adds recall@3 (needs network + model)
+make run                        # http://localhost:7860
+
+make test                       # fast gate: 108 passed, no network, no model download
+make test-integration           # real NIST fetch + embeddings (network)
+```
+
+The **fast gate (`make test`) is the CI gate** (`.github/workflows/ci.yml`: ruff, mypy,
+`pytest -m "not network"`, then `python eval.py`). The network suite (`pytest -m network`
+plus `eval --retrieval`) runs as a separate job. Or with Docker (mirrors the deployed image):
 
 ```bash
 docker build -t tawasolpay-risk .
 docker run -p 7860:7860 -e GROQ_API_KEY=$GROQ_API_KEY tawasolpay-risk
-# Render sets $PORT; the image honours it and defaults to 7860 locally.
 ```
 
-## Deployment (Render, Docker runtime)
+## 13. Routes and layout
 
-Deployed as a Docker web service on Render's free tier (`render.yaml`).
-`GROQ_API_KEY` is a Render **environment variable / secret**, injected at runtime —
-never in the image, the repo, or the git history. A scheduled GitHub Action
-(`.github/workflows/keep-alive.yml`) pings `/healthz` **every 10 minutes** to keep
-the service warm and to fail loudly if `kev_staleness_warning` ever goes true.
+| Method | Path | Description |
+|---|---|---|
+| GET | `/` | HTML risk report (top-5) |
+| GET | `/api/risks` | the `RiskBrief` — top-5 with score breakdown, control, `explanation_source` |
+| GET | `/api/findings` | all 114 scored findings (proves nothing was truncated before scoring) |
+| GET | `/traces` | last N JSONL run traces (input SHA-256s, KEV stats, per-risk breakdown) |
+| GET | `/healthz` | catalog version + SHA, live fetch timestamps, KEV coverage, LLM/template split |
 
-**Why Render, not Hugging Face Spaces.** The original target was an HF Docker Space;
-HF changed policy in 2026 to require a paid plan for Docker Spaces, so this moved to
-Render's free tier. Two Render constraints drove real design, not just config:
+```
+.
+├── data/            # the six input files (5 CSVs + the MDR report)
+├── docs/            # assignment brief, implementation plan, prompt playbook
+├── src/riskagent/
+│   ├── config.py    # WEIGHTS, thresholds, REFERENCE_DATE — the one tuning surface
+│   ├── ingest/      # CSV loader, KEV fetch, NIST fetch, MDR report parser
+│   ├── pipeline/    # join, intel_match, control_gaps, campaign, score (deterministic)
+│   ├── rag/         # Chroma index, retrieval, family filter, build-time query pack
+│   ├── generate/    # select, retrieve+guard+LLM assemble, render, trace
+│   └── app.py       # FastAPI: the five routes above
+├── templates/       # report.md / report.html (Jinja)
+├── tests/           # 120 tests incl. golden/ (the pairwise + top-5 + retrieval golden set)
+└── eval.py          # the evaluation harness
+```
 
-**1. 512MB RAM — the model is removed from the runtime entirely.** `torch` +
-`sentence-transformers` alone would blow the budget. But both the corpus (NIST
-controls) and the query set are static and known at build time — at most 114
-findings, each producing exactly one deterministic templated query. So `docker
-build` embeds the catalog into Chroma **and** precomputes the query vector for every
-finding (`src/riskagent/prewarm.py` → `src/riskagent/rag/pack.py`), and ships both in
-the image. At runtime, retrieval is a vector **lookup** against those precomputed
-vectors (`ChromaControlStore(embed_fn=...)`) — no `sentence-transformers`, no
-`torch`, no model load. `sentence-transformers` is a build-time-only dependency (the
-`build` extra in `pyproject.toml`), so the embedding pipeline is still real and
-reproducible, not hardcoded output. **Measured RSS on the deployed image: ~101MB
-under a 512MB cap (~20%).** Retrieval is byte-identical to the model path — the
-precomputed vectors *are* the model's vectors, pinned by
-`tests/test_rag_integration.py::test_precomputed_pack_retrieval_matches_model_exactly`
-across all 114 findings, and recall@3 is unchanged at 0.955.
+## Invariants, freshness, and degradation
 
-  *Honest tradeoff:* this makes the deployed system **batch-only over a fixed data
-  pack**. A brand-new finding appearing at runtime would need a rebuild to get its
-  query vector embedded. That is a deployment choice for a static-dataset assignment,
-  not an architectural limit — the same code runs the live model locally (no pack).
+**Invariants** (asserted in tests, stated once plainly): the LLM never decides a rank, a
+score, or which control applies; all 114 findings are scored before any truncation; nothing
+but NIST controls ever enters the vector store (`build()` accepts `ControlRecord` only, and
+`peek()` exists to prove it); intel matching is exact string equality.
 
-**2. Spin-down.** Render free spins the service down after ~15 min idle (~1 min cold
-start). The keep-alive workflow pings every 10 minutes to stay inside that window.
-Note that GitHub's scheduled runners are best-effort and can be delayed past 15 min
-under load, so an occasional cold start is still possible; an external pinger
-(UptimeRobot free) is more reliable if it matters.
+**Data freshness.** KEV and NIST are both fetched live and cached with timestamps, not
+bundled static copies. KEV re-fetches on every startup; a stale served copy (>7 days) flips
+`kev_staleness_warning` on `/healthz` and renders a banner. NIST is fetched and embedded at
+`docker build` (the runtime has no embedding model to re-embed a newer catalog), and its
+version + SHA-256 are stamped into the index and shown at `/healthz`; a redeploy re-fetches.
+
+**Reproducibility.** Recency is scored against a fixed reference date
+(`config.REFERENCE_DATE = 2026-04-24`, the freshest intel date), never the wall clock, so
+scores do not drift as real time moves past this synthetic dataset.
+
+**Degradation.** If the Groq provider is unreachable, the brief still renders with retrieved
+controls and template sentences — because only the prose was ever the model's job. This falls
+out of the architecture; it is not bolted on. On the live deploy, `/healthz` currently reports
+3 of 5 explanations as LLM prose and 2 as template (both correctly falling back), so the split
+is visible rather than hidden.
