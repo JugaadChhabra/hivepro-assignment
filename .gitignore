@@ -228,3 +228,9 @@ scored_findings.csv
 
 # local Claude Code tooling
 .claude/
+
+# graphify knowledge-graph outputs (local only, never staged)
+graphify-out/
+.graphify_python
+*.graphify_*.json
+graphify-out/.graphify_python
