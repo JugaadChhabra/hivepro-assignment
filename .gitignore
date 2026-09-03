@@ -234,3 +234,9 @@ graphify-out/
 .graphify_python
 *.graphify_*.json
 graphify-out/.graphify_python
+
+# macOS junk
+.DS_Store
+
+# local-only architecture walkthrough (never published)
+docs/architecture_walkthrough.html
