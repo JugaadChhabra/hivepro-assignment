@@ -135,33 +135,51 @@ that would be selecting constraints after seeing scores.
 
 ## Design decisions
 
-- **Deterministic scoring, not LLM ranking.** The scorer already reads every signal the LLM
-  would; ranking with the model adds non-determinism and breaks traceability for no gain.
-- **Exact-key intel matching.** 16 deliberate noise records exist to catch a fuzzy matcher; only
-  24 of 40 records match. Asserted as a regression test (`matched_intel_count == 24`).
-- **Two channels, never merged** — used three times: exact vs semantic intel; retrieved chunks
-  vs rule-derived `gap_controls`; inventory exposure vs `exposure_model_mismatch`.
-- **Collapse-to-base retrieval.** Over-fetch 40, collapse enhancements (SI-2(5) → SI-2) to 3
-  distinct base controls, carry the enhancement IDs alongside.
-- **Dedupe before truncating.** Without it, CitrixBleed occupies two of five slots (two load
-  balancers) and pushes a distinct finding out.
-- **The guard is a real control.** CVE tokens and numbers must appear verbatim in the evidence,
-  cited control IDs must be in the retrieved set, adversary claims are rejected when no intel
-  matched. Retry once, then template.
-- **Embedding at build time only.** `sentence-transformers`/`torch` are build-only extras; the
-  deployed service loads a precomputed query-vector pack and no model.
+- **Additive groups with per-group maxima — deliberately not tier gates.** Six groups, each
+  capped (exposure 25, exploitability 22, adversary 25, business 25, control_gap 10,
+  blast_radius 12), summed to a total. The caps carry weight: they stop one dimension being run
+  up by stacking small factors, so an internal dev box can't out-total an exposed payment
+  gateway. Every branch that fires appends a plain-English reason, so the score reconstructs
+  line by line — and that reason list is the evidence the LLM is later handed. The model is
+  never given the ranking, because it reads nothing the scorer hasn't already read.
+- **A blast-radius group for consequence, not just likelihood.** The other five groups answer
+  "how likely is this hit"; blast radius answers "how far it spreads." It reads the `depends_on`
+  graph transitively (Identity Verification carries 5 dependent services and looks unremarkable
+  on its own row), recovery-of-last-resort infrastructure, and the campaign's objective
+  (credential/IP theft spreads; a contained outage does not). Kept a separate group so the
+  rubric-derived maxima stay fixed and the before/after tuning reads cleanly — and it exists
+  because the golden set flagged a class of pairs the scorer got wrong for exactly this reason.
+- **Exact-key intel matching, checked against planted noise.** Intel attaches only on exact
+  `matched_cve_or_control` equality — no normalising, no embedding. The feed carries 16 noise
+  records built to trip a fuzzy matcher; a test pins the split at 24 matched / 16 unmatched and
+  asserts a lowercased near-miss of a real CVE does not attach.
+- **Reproducible by construction.** Recency scores against a fixed `REFERENCE_DATE`, never the
+  wall clock, so a score doesn't drift as real time passes this synthetic dataset; every run
+  appends a trace with the six input-file SHA-256s, so any ranking ties back to exact bytes.
+- **The evaluation is part of the build.** A golden set of pairwise constraints, recorded before
+  the scorer's output was seen, drives precision@5, recall@3, and blind-tracking, and a CI floor
+  fails the build if a weight change breaks a non-contested pair.
 
-## Considered and rejected
+## What I considered and rejected
 
-1. **LLM re-ranks the top-N** — no signal the scorer lacks; trades traceability for nothing.
-2. **Fuzzy intel matching** — attaches unrelated campaigns; the 16 noise records punish it.
-3. **Embedding intel summaries** — reintroduces fuzzy matching; kept as displayed evidence.
-4. **Semantic intel as a second channel** — deferred, not rejected: valid only if kept visibly
-   separate from confirmed matches. Out of scope for v1.
-5. **Hybrid BM25 + RRF retrieval** — rejected on a measurement: recall@3 threshold set to 0.8
-   *before* measuring; it came in at 0.955, so the complexity wasn't justified.
+1. **Hugging Face Spaces for hosting** — the first target (16 GB RAM, 48-hour idle pause).
+   Dropped when HF moved Docker Spaces behind a paid plan in 2026. The forced move to Render's
+   512 MB is what pushed the embedding model out of the runtime entirely: the catalog and every
+   finding's query vector are computed at `docker build` and shipped in the image, so runtime
+   retrieval is a lookup with no torch. Recorded as a reversal, not swapped silently.
+2. **Making staleness additive** — golden pair P10 argued that unseen-and-unowned *is* the risk
+   and should add points. Rejected on measurement: it moved headline pairwise by zero and
+   couldn't satisfy P10 without inventing graded-age and no-owner sub-signals. P10 was retired to
+   the golden set's `excluded` section with the reasoning kept.
+3. **Folding blast radius into the Business group** — kept it separate so the five rubric-derived
+   maxima stay fixed and the tuning table shows a clean before/after.
+4. **Hybrid BM25 + RRF retrieval** — the recall@3 bar was set to 0.8 *before* measuring; it came
+   in at 0.955, so the extra machinery wasn't warranted.
+5. **An agent framework and LLM reranking** — the flow is a straight line with no tool-use
+   decisions, and the scorer already holds every signal a reranker would weigh. Both were
+   declined as non-determinism without new information.
 
-## Q2 — where it goes wrong
+## Where it goes wrong
 
 Three failure modes grounded in this dataset, each with the mitigation in code.
 
@@ -187,6 +205,10 @@ scripted to hallucinate once then correct:
 [guard] final explanation_source = llm  (control cited: SI-2)
 ```
 
+The guard's honest limit: it rejects *ungrounded* entities (a CVE, number, actor, or control not
+in the evidence), but not *misattribution* — a real matched actor paired with the wrong CVE would
+pass, because both names are individually in the allow-list.
+
 ## Data defects found
 
 - **Four columns the first scorer ignored,** surfaced by hand-ranking: `depends_on`,
@@ -197,15 +219,22 @@ scripted to hallucinate once then correct:
 - **EDR denominators reconcile but differ:** 16 findings classify `missing_edr`; 26 assets lack
   EDR; the broader `no_edr` gap flag appears on 48 findings. All correct, worth stating.
 
-## Q3 — one thing I would change
+## What I would do with more time
 
-The missed golden slot (precision@5 = 0.800) is Fortinet SSL-VPN RCE (CVE-2024-21762), ranked #2
-in the golden set. The scorer models business impact per-service, so the VPN edge
-(`customer_facing = No`, 0 dependents, no PCI/GDPR) is under-weighted despite a VPN compromise
-being the pivot into the whole estate. The remedy is an asset-role signal separating pivot
-infrastructure from leaf services. I did not build it: it surfaced late, there is no clean
-structured field for it, and adding it after seeing the output would be tuning toward the
-benchmark.
+**Accuracy.** The additive scorer can't express interactions, and it costs us in two *measured*
+places: it can't discount a live campaign against an unreachable asset (pair P03, margin −0.4),
+and it can't credit a low-value asset for being a pivot (the Fortinet VPN miss, precision@5 =
+0.800 — the golden #2 dropped). The fix is a gating layer over the additive score: reachability
+gating the adversary term, an asset-role signal marking pivot infrastructure. I left it out on
+purpose — adding it after watching P03 fail would be tuning to a five-pair golden set, and the
+honest prerequisite is a larger labelled set to calibrate against. That set would also let me set
+the point-values empirically; today their ordering is principled (the report's rubric) but the
+exact numbers are considered guesses.
+
+**Presentation.** The rendered brief explains each rank in a sentence but hides the arithmetic —
+the per-group breakdown only exists on `/api/risks`. I'd surface it in the brief itself as a short
+contribution bar per group, so a reader sees *why* #1 outranks #2 at a glance, and render the
+cited NIST control's actual statement inline instead of a one-line summary.
 
 ## Verify it yourself
 
