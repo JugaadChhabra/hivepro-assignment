@@ -6,7 +6,7 @@ back to the exact input bytes it came from. The ranking is deterministic — a w
 set decides order, score, and control; the LLM only writes the one prose sentence that
 explains a rank, and it can invent nothing the guard cannot find in the evidence.
 
-**[Live brief](https://tawasolpay-risk.onrender.com/) · [API](https://tawasolpay-risk.onrender.com/api/risks) · [Repo](https://github.com/JugaadChhabra/hivepro-assignment)**
+**[Live brief](https://tawasolpay-risk.onrender.com/) · [API](https://tawasolpay-risk.onrender.com/api/risks) **
 
 The single most important design fact: **the LLM never decides a rank, a score, or which
 control applies.** Those are computed before it is called. If the model is unreachable, the
