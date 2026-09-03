@@ -6,7 +6,7 @@ score, and control. The LLM only writes the one sentence that explains a rank �
 rejects anything it can't find in the evidence, so if the model is unreachable the brief still
 renders from templates.
 
-**[Live brief](https://tawasolpay-risk.onrender.com/) · [API docs](https://tawasolpay-risk.onrender.com/docs) · [Repo](https://github.com/JugaadChhabra/hivepro-assignment)**
+**[Live brief](https://risk-assistant.jugaadchhabra.dev/) · [API docs](https://risk-assistant.jugaadchhabra.dev/docs) · [Repo](https://github.com/JugaadChhabra/hivepro-assignment)**
 
 ## How it works
 
@@ -214,7 +214,7 @@ make eval                                          # pairwise 0.800 (4/5), preci
 curl -s .../api/findings | jq length               # 114 — nothing truncated before scoring
 curl -s .../healthz | jq                           # live fetch timestamps + LLM/template split
 ```
-(base URL `https://tawasolpay-risk.onrender.com`)
+(base URL `https://risk-assistant.jugaadchhabra.dev`)
 
 ## Run locally
 
